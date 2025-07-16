@@ -1,0 +1,14 @@
+# System packages to install via apt
+# sudo apt install -y <package>
+
+python3-pyqt6
+python3-opencv
+python3-numpy
+python3-watchdog
+python3-systemd
+python3-psutil
+python3-requests
+python3-termcolor
+
+# For Google APIs and DepthAI:
+# pip install --user google-api-python-client google-auth-httplib2 google-auth-oauthlib depthai

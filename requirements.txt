@@ -1,0 +1,23 @@
+# Core dependencies
+PyQt6
+opencv-python
+numpy
+depthai
+
+# Google APIs
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
+google-auth
+google-cloud-storage
+requests
+
+# System monitoring
+psutil
+watchdog
+
+# Logging
+systemd-python
+
+# Development/optional
+termcolor

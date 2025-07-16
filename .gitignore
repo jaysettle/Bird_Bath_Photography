@@ -1,0 +1,89 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+ENV/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Logs
+logs/
+*.log
+log/
+
+# Sensitive Configuration
+service_account.json
+client_secret.json
+token.pickle
+credentials.json
+*.key
+*.pem
+
+# Email Configuration  
+email_config.json
+last_sent_images.json
+
+# Camera Settings
+camera_settings.json
+
+# Temporary files
+*.tmp
+*.temp
+*.cache
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Test files
+test_*.py
+*.test.py
+
+# Backup files
+*.bak
+*.backup
+OLD_BACKUP_*/
+
+# Image files (if you don't want to track captured images)
+# *.jpg
+# *.jpeg
+# *.png
+
+# PyQt generated files
+*.ui.py
+*_rc.py
+
+# Documentation build
+docs/_build/
+docs/_static/
+docs/_templates/

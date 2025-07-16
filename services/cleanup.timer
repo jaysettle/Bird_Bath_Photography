@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Bird Detection Cleanup Timer
+Requires=cleanup.service
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+AccuracySec=1m
+
+[Install]
+WantedBy=timers.target

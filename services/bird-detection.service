@@ -1,0 +1,26 @@
+[Unit]
+Description=Bird Detection System - Revamped PyQt6 Interface
+After=network.target graphical-session.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=jaysettle
+Group=jaysettle
+WorkingDirectory=/home/jaysettle/JayModel/MotionRevamp
+Environment=DISPLAY=:0
+Environment=QT_QPA_PLATFORM=xcb
+Environment=PYTHONUNBUFFERED=1
+ExecStartPre=/bin/sleep 60
+ExecStart=/usr/bin/python3 main.py
+
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

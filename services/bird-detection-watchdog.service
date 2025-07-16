@@ -1,0 +1,23 @@
+[Unit]
+Description=Bird Detection System Watchdog
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=jaysettle
+Group=jaysettle
+WorkingDirectory=/home/jaysettle/JayModel/MotionRevamp
+ExecStart=/usr/bin/python3 /home/jaysettle/JayModel/MotionRevamp/bird_watchdog.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Environment variables
+Environment=PYTHONPATH=/home/jaysettle/JayModel/MotionRevamp
+Environment=QT_QPA_PLATFORM=xcb
+Environment=DISPLAY=:0
+
+[Install]
+WantedBy=multi-user.target
