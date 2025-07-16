@@ -145,13 +145,20 @@ class DriveUploader:
     
     def _upload_worker(self):
         """Background worker for uploading files"""
+        last_reenable_check = 0
         while self.running:
             try:
                 file_path = self.upload_queue.get(timeout=1)
                 if file_path is None:
                     break
                 
-                if self._upload_file(file_path):
+                # Try to re-enable service if disabled (check every 5 minutes)
+                current_time = time.time()
+                if not self.enabled and current_time - last_reenable_check > 300:
+                    self.test_and_reenable()
+                    last_reenable_check = current_time
+                
+                if self.enabled and self._upload_file(file_path):
                     self.uploaded_files.add(file_path)
                     self._save_upload_log()
                 
@@ -209,9 +216,9 @@ class DriveUploader:
             
             # Handle quota exceeded error specifically
             if "storageQuotaExceeded" in error_str:
-                logger.error("Google Drive storage quota exceeded! Disabling Drive upload.")
-                self.enabled = False
-                self.running = False
+                logger.error("Google Drive storage quota exceeded! Upload failed, but service remains enabled.")
+                # Don't disable the service - just report the error
+                # The service will try again with the next file
                 return False
             
             logger.error(f"Failed to upload {file_path}: {e}")
@@ -261,10 +268,12 @@ class DriveUploader:
             
             if limit > 0:
                 usage_percent = (usage / limit) * 100
-                logger.info(f"Drive storage: {usage_percent:.1f}% used ({usage / (1024**3):.1f}GB / {limit / (1024**3):.1f}GB)")
+                free_gb = (limit - usage) / (1024**3)
+                logger.info(f"Drive storage: {usage_percent:.1f}% used ({usage / (1024**3):.1f}GB / {limit / (1024**3):.1f}GB), {free_gb:.1f}GB free")
                 
-                if usage_percent > 95:
-                    logger.warning("Drive storage nearly full - uploads may fail")
+                # Allow uploads if we have at least 100MB free space
+                if free_gb < 0.1:
+                    logger.warning(f"Drive storage nearly full - only {free_gb:.1f}GB free")
                     return False
                     
             return True
@@ -272,6 +281,104 @@ class DriveUploader:
         except Exception as e:
             logger.error(f"Failed to check Drive quota: {e}")
             return True  # Assume OK if we can't check
+    
+    def test_and_reenable(self):
+        """Test Drive access and re-enable if quota is available"""
+        if not self.enabled:
+            logger.info("Drive upload is disabled, checking if it can be re-enabled...")
+            if self.check_drive_quota():
+                self.enabled = True
+                logger.info("Drive upload re-enabled - quota available")
+                return True
+            else:
+                logger.warning("Drive upload remains disabled - quota still exceeded")
+                return False
+        return True
+    
+    def get_drive_folder_stats(self):
+        """Get statistics about the Google Drive folder"""
+        try:
+            if not self.drive_service or not self.folder_id:
+                return None
+                
+            # Get all files in the folder
+            results = self.drive_service.files().list(
+                q=f"parents in '{self.folder_id}' and trashed=false",
+                fields="files(id,name,size,createdTime,modifiedTime)",
+                pageSize=1000
+            ).execute()
+            
+            files = results.get('files', [])
+            
+            if not files:
+                return {
+                    'file_count': 0,
+                    'total_size': 0,
+                    'latest_file': None,
+                    'latest_upload_time': None
+                }
+            
+            # Calculate total size
+            total_size = 0
+            latest_file = None
+            latest_time = None
+            
+            for file in files:
+                # Add file size
+                if 'size' in file:
+                    total_size += int(file['size'])
+                
+                # Track latest file
+                file_time = file.get('modifiedTime', file.get('createdTime'))
+                if file_time and (latest_time is None or file_time > latest_time):
+                    latest_time = file_time
+                    latest_file = file['name']
+            
+            return {
+                'file_count': len(files),
+                'total_size': total_size,
+                'latest_file': latest_file,
+                'latest_upload_time': latest_time
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to get Drive folder stats: {e}")
+            return None
+    
+    def clear_drive_folder(self):
+        """Clear all files from the Google Drive folder"""
+        try:
+            if not self.drive_service or not self.folder_id:
+                return False
+                
+            # Get all files in the folder
+            results = self.drive_service.files().list(
+                q=f"parents in '{self.folder_id}' and trashed=false",
+                fields="files(id,name)"
+            ).execute()
+            
+            files = results.get('files', [])
+            
+            if not files:
+                logger.info("No files to delete from Drive folder")
+                return True
+            
+            # Delete all files
+            deleted_count = 0
+            for file in files:
+                try:
+                    self.drive_service.files().delete(fileId=file['id']).execute()
+                    deleted_count += 1
+                    logger.info(f"Deleted from Drive: {file['name']}")
+                except Exception as e:
+                    logger.error(f"Failed to delete {file['name']}: {e}")
+            
+            logger.info(f"Cleared {deleted_count} files from Drive folder")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to clear Drive folder: {e}")
+            return False
 
 class FileWatcher(FileSystemEventHandler):
     """Watch for new image files"""

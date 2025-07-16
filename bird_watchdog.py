@@ -30,7 +30,7 @@ class BirdDetectionWatchdog:
     def __init__(self):
         self.process = None
         self.running = True
-        self.check_interval = 30  # 30 seconds
+        self.check_interval = 60  # 60 seconds
         self.restart_delay = 5    # 5 seconds
         self.max_restarts = 10    # Maximum restarts per hour
         self.restart_count = 0

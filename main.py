@@ -568,22 +568,44 @@ class ServicesTab(QWidget):
         services_group.setLayout(services_layout)
         layout.addWidget(services_group)
         
-        # Upload services status
-        upload_group = QGroupBox("Upload Services")
-        upload_layout = QGridLayout()
+        # Google Drive Upload Services
+        drive_group = QGroupBox("Google Drive Upload Services")
+        drive_layout = QGridLayout()
         
         # Drive upload status
-        upload_layout.addWidget(QLabel("Google Drive:"), 0, 0)
+        drive_layout.addWidget(QLabel("Status:"), 0, 0)
         self.drive_status = QLabel("Disabled (Quota Full)")
         self.drive_status.setStyleSheet("color: orange;")
-        upload_layout.addWidget(self.drive_status, 0, 1)
+        drive_layout.addWidget(self.drive_status, 0, 1)
+        
+        # Upload queue
+        drive_layout.addWidget(QLabel("Queue:"), 1, 0)
         self.drive_queue = QLabel("N/A")
         self.drive_queue.setStyleSheet("color: gray;")
-        upload_layout.addWidget(self.drive_queue, 0, 2)
+        drive_layout.addWidget(self.drive_queue, 1, 1)
         
+        # File count
+        drive_layout.addWidget(QLabel("Files in Drive:"), 2, 0)
+        self.drive_file_count = QLabel("0")
+        drive_layout.addWidget(self.drive_file_count, 2, 1)
         
-        upload_group.setLayout(upload_layout)
-        layout.addWidget(upload_group)
+        # Total size
+        drive_layout.addWidget(QLabel("Total Size:"), 3, 0)
+        self.drive_total_size = QLabel("0.0 MB")
+        drive_layout.addWidget(self.drive_total_size, 3, 1)
+        
+        # Latest file
+        drive_layout.addWidget(QLabel("Latest Upload:"), 4, 0)
+        self.drive_latest_file = QLabel("None")
+        drive_layout.addWidget(self.drive_latest_file, 4, 1)
+        
+        # Clear folder button
+        self.clear_drive_btn = QPushButton("Clear Drive Folder")
+        self.clear_drive_btn.clicked.connect(self.on_clear_drive_folder)
+        drive_layout.addWidget(self.clear_drive_btn, 5, 0, 1, 2)
+        
+        drive_group.setLayout(drive_layout)
+        layout.addWidget(drive_group)
         
         # Email service status
         email_group = QGroupBox("Email Service")
@@ -623,6 +645,35 @@ class ServicesTab(QWidget):
         
         storage_group.setLayout(storage_layout)
         layout.addWidget(storage_group)
+        
+        # Watchdog Service Control
+        watchdog_group = QGroupBox("Watchdog Service Control")
+        watchdog_layout = QGridLayout()
+        
+        # Watchdog status
+        watchdog_layout.addWidget(QLabel("Status:"), 0, 0)
+        self.watchdog_status = QLabel("Unknown")
+        watchdog_layout.addWidget(self.watchdog_status, 0, 1)
+        
+        # Watchdog control buttons
+        self.start_watchdog_btn = QPushButton("Start Watchdog")
+        self.start_watchdog_btn.clicked.connect(self.on_start_watchdog)
+        watchdog_layout.addWidget(self.start_watchdog_btn, 1, 0)
+        
+        self.stop_watchdog_btn = QPushButton("Stop Watchdog")
+        self.stop_watchdog_btn.clicked.connect(self.on_stop_watchdog)
+        watchdog_layout.addWidget(self.stop_watchdog_btn, 1, 1)
+        
+        self.enable_watchdog_btn = QPushButton("Enable Auto-Start")
+        self.enable_watchdog_btn.clicked.connect(self.on_enable_watchdog)
+        watchdog_layout.addWidget(self.enable_watchdog_btn, 2, 0)
+        
+        self.disable_watchdog_btn = QPushButton("Disable Auto-Start")
+        self.disable_watchdog_btn.clicked.connect(self.on_disable_watchdog)
+        watchdog_layout.addWidget(self.disable_watchdog_btn, 2, 1)
+        
+        watchdog_group.setLayout(watchdog_layout)
+        layout.addWidget(watchdog_group)
         
         # Configuration toggles
         config_group = QGroupBox("Configuration")
@@ -713,8 +764,36 @@ class ServicesTab(QWidget):
                 self.drive_status.setText("Disabled") 
                 self.drive_status.setStyleSheet("color: #ff6464;")  # Red for dark theme
                 
-            self.drive_queue.setText(f"Queue: {drive_queue}")
+            self.drive_queue.setText(f"{drive_queue}")
             self.drive_queue.setStyleSheet("color: #ffffff;")
+            
+            # Get Drive folder statistics
+            if hasattr(self.uploader, 'drive_uploader') and self.uploader.drive_uploader:
+                stats = self.uploader.drive_uploader.get_drive_folder_stats()
+                if stats:
+                    self.drive_file_count.setText(str(stats['file_count']))
+                    
+                    # Convert size to readable format
+                    size_mb = stats['total_size'] / (1024 * 1024)
+                    if size_mb >= 1000:
+                        size_str = f"{size_mb/1024:.1f} GB"
+                    else:
+                        size_str = f"{size_mb:.1f} MB"
+                    self.drive_total_size.setText(size_str)
+                    
+                    # Latest file
+                    if stats['latest_file']:
+                        self.drive_latest_file.setText(stats['latest_file'])
+                    else:
+                        self.drive_latest_file.setText("None")
+                else:
+                    self.drive_file_count.setText("Error")
+                    self.drive_total_size.setText("Error")
+                    self.drive_latest_file.setText("Error")
+            else:
+                self.drive_file_count.setText("N/A")
+                self.drive_total_size.setText("N/A")
+                self.drive_latest_file.setText("N/A")
             
     
     def update_email_status(self):
@@ -756,6 +835,108 @@ class ServicesTab(QWidget):
             logger.error(f"Error updating storage status: {e}")
             self.storage_used.setText("Error")
             self.file_count.setText("0")
+    
+    def update_watchdog_status(self):
+        """Update watchdog service status"""
+        try:
+            import subprocess
+            result = subprocess.run(
+                ['systemctl', 'is-active', 'bird-detection-watchdog.service'],
+                capture_output=True, text=True, timeout=5
+            )
+            status = result.stdout.strip()
+            
+            if status == 'active':
+                self.watchdog_status.setText("Running")
+                self.watchdog_status.setStyleSheet("color: #00ff64;")  # Green
+            elif status == 'inactive':
+                self.watchdog_status.setText("Stopped")
+                self.watchdog_status.setStyleSheet("color: #ff6464;")  # Red
+            else:
+                self.watchdog_status.setText(f"Unknown ({status})")
+                self.watchdog_status.setStyleSheet("color: #ffaa00;")  # Orange
+                
+        except Exception as e:
+            self.watchdog_status.setText("Error")
+            self.watchdog_status.setStyleSheet("color: #ff6464;")
+            logger.error(f"Error checking watchdog status: {e}")
+    
+    def on_clear_drive_folder(self):
+        """Clear Google Drive folder"""
+        try:
+            if hasattr(self.uploader, 'drive_uploader') and self.uploader.drive_uploader:
+                if self.uploader.drive_uploader.clear_drive_folder():
+                    logger.info("Drive folder cleared successfully")
+                    # Update stats immediately
+                    self.update_upload_status()
+                else:
+                    logger.error("Failed to clear Drive folder")
+            else:
+                logger.error("Drive uploader not available")
+        except Exception as e:
+            logger.error(f"Error clearing Drive folder: {e}")
+    
+    def on_start_watchdog(self):
+        """Start watchdog service"""
+        try:
+            import subprocess
+            result = subprocess.run(
+                ['sudo', 'systemctl', 'start', 'bird-detection-watchdog.service'],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode == 0:
+                logger.info("Watchdog service started")
+            else:
+                logger.error(f"Failed to start watchdog: {result.stderr}")
+            self.update_watchdog_status()
+        except Exception as e:
+            logger.error(f"Error starting watchdog: {e}")
+    
+    def on_stop_watchdog(self):
+        """Stop watchdog service"""
+        try:
+            import subprocess
+            result = subprocess.run(
+                ['sudo', 'systemctl', 'stop', 'bird-detection-watchdog.service'],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode == 0:
+                logger.info("Watchdog service stopped")
+            else:
+                logger.error(f"Failed to stop watchdog: {result.stderr}")
+            self.update_watchdog_status()
+        except Exception as e:
+            logger.error(f"Error stopping watchdog: {e}")
+    
+    def on_enable_watchdog(self):
+        """Enable watchdog service auto-start"""
+        try:
+            import subprocess
+            result = subprocess.run(
+                ['sudo', 'systemctl', 'enable', 'bird-detection-watchdog.service'],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode == 0:
+                logger.info("Watchdog service auto-start enabled")
+            else:
+                logger.error(f"Failed to enable watchdog: {result.stderr}")
+        except Exception as e:
+            logger.error(f"Error enabling watchdog: {e}")
+    
+    def on_disable_watchdog(self):
+        """Disable watchdog service auto-start"""
+        try:
+            import subprocess
+            result = subprocess.run(
+                ['sudo', 'systemctl', 'disable', 'bird-detection-watchdog.service'],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode == 0:
+                logger.info("Watchdog service auto-start disabled")
+            else:
+                logger.error(f"Failed to disable watchdog: {result.stderr}")
+        except Exception as e:
+            logger.error(f"Error disabling watchdog: {e}")
     
     def on_test_email(self):
         """Send test email"""
@@ -1049,6 +1230,7 @@ class MainWindow(QMainWindow):
         self.services_tab.update_upload_status()
         self.services_tab.update_email_status()
         self.services_tab.update_storage_status()
+        self.services_tab.update_watchdog_status()
     
     def on_image_captured(self, image_path):
         """Handle image capture"""
