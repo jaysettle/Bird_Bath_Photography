@@ -1057,8 +1057,8 @@ class MainWindow(QMainWindow):
         # Queue for upload
         self.uploader.queue_file(image_path)
         
-        # Send email notification
-        self.email_handler.send_motion_capture(image_path)
+        # Email notifications are sent via hourly reports only
+        # Individual motion capture emails are disabled
         
         self.statusBar().showMessage(f"Image captured: {os.path.basename(image_path)}")
     

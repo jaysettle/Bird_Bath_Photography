@@ -10,7 +10,7 @@ import json
 import time
 import glob
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.image import MIMEImage
@@ -38,6 +38,10 @@ class EmailHandler:
         self.email_thread = None
         self.running = False
         
+        # Hourly report scheduler
+        self.hourly_timer = None
+        self.last_hourly_report = None
+        
         # Tracking
         self.last_sent_record = os.path.join(self.storage_config['save_dir'], 'last_sent.json')
         
@@ -51,11 +55,18 @@ class EmailHandler:
         self.running = True
         self.email_thread = threading.Thread(target=self._email_worker, daemon=True)
         self.email_thread.start()
+        
+        # Start hourly report scheduler if enabled
+        if self.config.get('hourly_report', False):
+            self._schedule_hourly_reports()
+        
         logger.info("Email service started")
     
     def stop(self):
         """Stop the email service"""
         self.running = False
+        if self.hourly_timer:
+            self.hourly_timer.cancel()
         if self.email_thread:
             self.email_thread.join(timeout=5)
         logger.info("Email service stopped")
@@ -76,6 +87,37 @@ class EmailHandler:
                 continue
             except Exception as e:
                 logger.error(f"Error in email worker: {e}")
+    
+    def _schedule_hourly_reports(self):
+        """Schedule hourly reports to run at the top of each hour"""
+        if not self.running:
+            return
+            
+        # Calculate seconds until next hour
+        now = datetime.now()
+        next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        seconds_until_next_hour = (next_hour - now).total_seconds()
+        
+        # Schedule the next hourly report
+        self.hourly_timer = threading.Timer(seconds_until_next_hour, self._hourly_report_callback)
+        self.hourly_timer.start()
+        
+        logger.info(f"Next hourly report scheduled for {next_hour.strftime('%Y-%m-%d %H:%M:%S')}")
+    
+    def _hourly_report_callback(self):
+        """Callback for hourly report timer"""
+        if not self.running:
+            return
+            
+        try:
+            # Send hourly report
+            self.send_hourly_report()
+            
+            # Schedule next report
+            self._schedule_hourly_reports()
+            
+        except Exception as e:
+            logger.error(f"Error in hourly report callback: {e}")
     
     def _send_email(self, subject, body_html, image_paths, recipient=None):
         """Send email with attachments"""
@@ -243,20 +285,10 @@ class EmailHandler:
             # Sort by timestamp
             image_files.sort()
             
-            # Get latest 5 images
+            # Get latest 5 images (always send these regardless of previous sends)
             latest_images = image_files[-5:]
             
-            # Load last sent record
-            last_sent_images = self._load_last_sent_record()
-            
-            # Filter out already sent images
-            new_images = [img for img in latest_images if img not in last_sent_images]
-            
-            if not new_images:
-                logger.info("No new images for hourly report")
-                return
-            
-            subject = f"📊 Hourly Bird Report - {len(new_images)} New Captures"
+            subject = f"📊 Hourly Bird Report - Latest 5 Images"
             body_html = f"""
             <html>
             <body style="font-family: Arial, sans-serif; margin: 20px;">
@@ -264,11 +296,11 @@ class EmailHandler:
                 
                 <div style="background-color: #f0f8ff; padding: 15px; border-radius: 8px; margin: 10px 0;">
                     <p><strong>Report Time:</strong> {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-                    <p><strong>New Captures:</strong> {len(new_images)}</p>
+                    <p><strong>Latest Images:</strong> {len(latest_images)}</p>
                     <p><strong>Total Images:</strong> {len(image_files)}</p>
                 </div>
                 
-                <p>Attached are the {len(new_images)} new bird captures since the last report.</p>
+                <p>Attached are the {len(latest_images)} most recent bird captures from the past hour.</p>
                 
                 <hr style="margin: 20px 0;">
                 <p style="color: #666; font-size: 12px;">
@@ -282,15 +314,11 @@ class EmailHandler:
             self.email_queue.put({
                 'subject': subject,
                 'body_html': body_html,
-                'image_paths': new_images,
+                'image_paths': latest_images,
                 'recipient': self.config['receivers']['primary']
             })
             
-            # Update last sent record
-            self._save_last_sent_record(new_images)
-            
-            
-            logger.info(f"Hourly report queued with {len(new_images)} new images")
+            logger.info(f"Hourly report queued with {len(latest_images)} latest images")
             
         except Exception as e:
             logger.error(f"Error preparing hourly report: {e}")
