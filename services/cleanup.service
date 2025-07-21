@@ -4,9 +4,9 @@ After=network.target
 
 [Service]
 Type=oneshot
-User=jaysettle
-Group=jaysettle
-WorkingDirectory=/home/jaysettle/JayModel/MotionRevamp
+User=YOUR_USERNAME_HERE
+Group=YOUR_USERNAME_HERE
+WorkingDirectory=/path/to/your/bird-detection-project
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/usr/bin/python3 -c "from src.cleanup_manager import run_cleanup_service; run_cleanup_service()"
 

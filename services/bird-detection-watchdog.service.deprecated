@@ -1,0 +1,27 @@
+# DEPRECATED: This file contains hardcoded paths and is no longer used
+# Use install_watchdog_dynamic.sh to create a proper service file for your system
+#
+# Original service file for reference only
+[Unit]
+Description=Bird Detection System Watchdog
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=YOUR_USERNAME_HERE
+Group=YOUR_USERNAME_HERE
+WorkingDirectory=/path/to/your/bird-detection-project
+ExecStart=/usr/bin/python3 /path/to/your/bird-detection-project/bird_watchdog.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Environment variables
+Environment=PYTHONPATH=/path/to/your/bird-detection-project
+Environment=QT_QPA_PLATFORM=xcb
+Environment=DISPLAY=:0
+
+[Install]
+WantedBy=multi-user.target

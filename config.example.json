@@ -1,0 +1,90 @@
+{
+  "camera": {
+    "resolution": "4k",
+    "socket": "rgb",
+    "preview_width": 600,
+    "preview_height": 400,
+    "orientation": "rotate_180",
+    "focus": 132,
+    "exposure_ms": 20,
+    "iso_min": 100,
+    "iso_max": 800,
+    "white_balance": 6208,
+    "sharpness": 0,
+    "saturation": 0,
+    "contrast": 0,
+    "brightness": 0,
+    "luma_denoise": 1,
+    "chroma_denoise": 1,
+    "anti_banding": 3,
+    "awb_mode": 0,
+    "effect_mode": 0,
+    "exposure_compensation": 0,
+    "iso": 0,
+    "threshold": 37,
+    "min_area": 500
+  },
+  "motion_detection": {
+    "threshold": 50,
+    "min_area": 500,
+    "debounce_time": 5.0,
+    "default_roi": {
+      "enabled": true,
+      "x": 43,
+      "y": 177,
+      "width": 699,
+      "height": 287
+    }
+  },
+  "storage": {
+    "save_dir": "~/BirdPhotos",
+    "max_size_gb": 2,
+    "cleanup_time": "23:30"
+  },
+  "email": {
+    "sender": "your-email@gmail.com",
+    "password": "your-app-password",
+    "receivers": {
+      "primary": "your-email@gmail.com"
+    },
+    "smtp_server": "smtp.gmail.com",
+    "smtp_port": 465,
+    "hourly_report": true,
+    "daily_email_time": "16:30",
+    "quiet_hours": {
+      "start": 23,
+      "end": 5
+    }
+  },
+  "services": {
+    "drive_upload": {
+      "enabled": true,
+      "folder_name": "Bird Photos",
+      "upload_delay": 3,
+      "note": "OAuth2 only - personal Google Drive folder"
+    },
+    "cleanup": {
+      "enabled": true,
+      "schedule": "daily"
+    }
+  },
+  "logging": {
+    "level": "INFO",
+    "max_log_size": "10MB",
+    "backup_count": 5,
+    "journal_integration": true
+  },
+  "ui": {
+    "window_title": "Bird Detection System",
+    "tabs": [
+      "Camera",
+      "Services",
+      "Logs"
+    ],
+    "refresh_rate": 30
+  },
+  "openai": {
+    "api_key": "your-openai-api-key-here",
+    "enabled": true
+  }
+}

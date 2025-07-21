@@ -1,0 +1,23 @@
+[Unit]
+Description=Bird Detection System Watchdog
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=__USER__
+Group=__USER__
+WorkingDirectory=__WORKDIR__
+ExecStart=/usr/bin/python3 __WORKDIR__/bird_watchdog.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bird-detection-watchdog
+
+# Environment variables
+Environment=PYTHONPATH=__WORKDIR__
+Environment=DISPLAY=:0
+
+[Install]
+WantedBy=multi-user.target

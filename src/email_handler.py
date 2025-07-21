@@ -60,6 +60,9 @@ class EmailHandler:
         if self.config.get('hourly_report', False):
             self._schedule_hourly_reports()
         
+        # Send startup notification
+        self.send_startup_email()
+        
         logger.info("Email service started")
     
     def stop(self):
@@ -418,6 +421,56 @@ class EmailHandler:
                 return current_hour >= start_hour or current_hour <= end_hour
         except Exception:
             return False
+    
+    def send_startup_email(self):
+        """Send email notification on system startup/reboot"""
+        try:
+            hostname = socket.gethostname()
+            startup_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            
+            subject = f"🚀 Bird Detection System Started - {hostname}"
+            body_html = f"""
+            <html>
+            <body style="font-family: Arial, sans-serif; margin: 20px;">
+                <h2 style="color: #2E8B57;">🚀 System Startup Notification</h2>
+                
+                <div style="background-color: #f0f8ff; padding: 15px; border-radius: 8px; margin: 10px 0;">
+                    <p><strong>Hostname:</strong> {hostname}</p>
+                    <p><strong>Startup Time:</strong> {startup_time}</p>
+                    <p><strong>Status:</strong> All services started successfully</p>
+                </div>
+                
+                <h3>Active Services:</h3>
+                <ul>
+                    <li>Camera Service: Active</li>
+                    <li>Motion Detection: Active</li>
+                    <li>Email Service: Active</li>
+                    <li>Google Drive Upload: {'Active' if self.config.get('drive_upload', {}).get('enabled', False) else 'Disabled'}</li>
+                    <li>Hourly Reports: {'Active' if self.config.get('hourly_report', False) else 'Disabled'}</li>
+                </ul>
+                
+                <p>The bird detection system has started successfully and is now monitoring.</p>
+                
+                <hr style="margin: 20px 0;">
+                <p style="color: #666; font-size: 12px;">
+                    This is an automated notification from the Bird Detection System.
+                </p>
+            </body>
+            </html>
+            """
+            
+            # Queue the email
+            self.email_queue.put({
+                'subject': subject,
+                'body_html': body_html,
+                'image_paths': [],
+                'recipient': self.config['receivers']['primary']
+            })
+            
+            logger.info("Startup email notification queued")
+            
+        except Exception as e:
+            logger.error(f"Error sending startup email: {e}")
     
     def get_queue_size(self):
         """Get current email queue size"""

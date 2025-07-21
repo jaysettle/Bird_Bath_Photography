@@ -1,10 +1,30 @@
 #!/bin/bash
-# Install Bird Detection Watchdog Service
+# DEPRECATED: This script contains hardcoded paths
+# Use install_watchdog_dynamic.sh instead!
 
-echo "Installing Bird Detection Watchdog Service..."
+echo "⚠️  DEPRECATED SCRIPT ⚠️"
+echo "This script contains hardcoded paths and is no longer supported."
+echo ""
+echo "Please use the new dynamic installer instead:"
+echo "  ./install_watchdog_dynamic.sh"
+echo ""
+echo "The new installer:"
+echo "  ✅ Works for any user and directory"
+echo "  ✅ No hardcoded paths"
+echo "  ✅ Interactive setup with confirmations"
+echo "  ✅ Better error handling"
+echo ""
+read -p "Continue with deprecated script anyway? [y/N]: " -n 1 -r
+echo
+if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+    echo "Cancelled. Please use: ./install_watchdog_dynamic.sh"
+    exit 0
+fi
 
-# Copy service file
-sudo cp /home/jaysettle/JayModel/MotionRevamp/services/bird-detection-watchdog.service /etc/systemd/system/
+echo "Installing Bird Detection Watchdog Service (deprecated method)..."
+
+# Copy service file (HARDCODED - WILL FAIL FOR OTHER USERS)
+sudo cp services/bird-detection-watchdog.service.deprecated /etc/systemd/system/bird-detection-watchdog.service
 
 # Reload systemd
 sudo systemctl daemon-reload

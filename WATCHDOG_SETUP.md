@@ -13,11 +13,24 @@ The watchdog service monitors the Bird Detection System and automatically restar
 
 ## Installation
 
-1. **Install the service:**
-   ```bash
-   cd /home/jaysettle/JayModel/MotionRevamp
-   ./install_watchdog.sh
-   ```
+### Option 1: Dynamic Installer (Recommended)
+```bash
+cd /path/to/your/bird-detection-project
+./install_watchdog_dynamic.sh
+```
+
+### Option 2: Using Configuration Tab (GUI)
+1. Open the Bird Detection application
+2. Go to the **Configuration** tab
+3. Scroll to **System Management** section
+4. Click **Install Watchdog Service**
+5. Follow the prompts in the terminal window
+
+### Option 3: Manual Installation (Advanced)
+```bash
+cd /path/to/your/bird-detection-project
+./install_watchdog.sh  # Legacy script (not recommended)
+```
 
 2. **Start the watchdog service:**
    ```bash
@@ -55,7 +68,7 @@ sudo journalctl -u bird-detection-watchdog.service -f
 sudo journalctl -u bird-detection-watchdog.service -n 50
 
 # View watchdog-specific logs
-tail -f /home/jaysettle/JayModel/MotionRevamp/logs/watchdog.log
+tail -f logs/watchdog.log
 ```
 
 ## How It Works
@@ -90,10 +103,10 @@ sudo journalctl -u bird-detection-watchdog.service -n 50
 ### Application Keeps Restarting
 ```bash
 # Check application logs
-tail -f /home/jaysettle/JayModel/MotionRevamp/logs/bird_detection.log
+tail -f logs/bird_detection.log
 
 # Check watchdog logs
-tail -f /home/jaysettle/JayModel/MotionRevamp/logs/watchdog.log
+tail -f logs/watchdog.log
 ```
 
 ### Stop Manual Instance First

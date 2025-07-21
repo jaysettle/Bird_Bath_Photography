@@ -42,8 +42,10 @@ logs/
 log/
 
 # Sensitive Configuration
+config.json
 service_account.json
 client_secret.json
+token.json
 token.pickle
 credentials.json
 *.key
@@ -52,6 +54,12 @@ credentials.json
 # Email Configuration  
 email_config.json
 last_sent_images.json
+
+# Database files with personal data
+species_database.json
+
+# Web server logs
+server.log
 
 # Camera Settings
 camera_settings.json

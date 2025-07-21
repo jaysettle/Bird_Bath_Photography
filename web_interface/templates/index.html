@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>Bird Detection Control</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header>
+            <div class="header-left">
+                <h1>Bird Detection</h1>
+                <div class="timestamp" id="current-time">00:00:00</div>
+            </div>
+            <div class="status-indicator" id="app-status">
+                <span class="status-dot"></span>
+                <span class="status-text">Checking...</span>
+            </div>
+        </header>
+
+        <!-- Tab Navigation -->
+        <nav class="tabs">
+            <button class="tab-btn active" data-tab="dashboard">Dashboard</button>
+        </nav>
+
+        <!-- Dashboard Tab -->
+        <div id="dashboard-tab" class="tab-content active">
+            <!-- Quick Actions -->
+            <section class="actions" style="display: flex; gap: 0.75rem;">
+                <button id="restart-btn" class="action-btn danger" style="flex: 1;">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                        <path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                    </svg>
+                    Restart App
+                </button>
+                <a href="/species" class="action-btn primary" style="flex: 1; text-decoration: none; display: flex; align-items: center; justify-content: center; gap: 0.5rem;">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                        <path d="M12 3C7.03 3 3 7.03 3 12s4.03 9 9 9c.83 0 1.5-.67 1.5-1.5 0-.39-.15-.74-.39-1.01-.23-.26-.38-.61-.38-.99 0-.83.67-1.5 1.5-1.5H16c2.76 0 5-2.24 5-5 0-4.42-4.03-8-9-8zm-5.5 9c-.83 0-1.5-.67-1.5-1.5S5.67 9 6.5 9 8 9.67 8 10.5 7.33 12 6.5 12zm3-4C8.67 8 8 7.33 8 6.5S8.67 5 9.5 5s1.5.67 1.5 1.5S10.33 8 9.5 8zm5 0c-.83 0-1.5-.67-1.5-1.5S13.67 5 14.5 5s1.5.67 1.5 1.5S15.33 8 14.5 8zm3 4c-.83 0-1.5-.67-1.5-1.5S16.67 9 17.5 9s1.5.67 1.5 1.5-.67 1.5-1.5 1.5z"/>
+                    </svg>
+                    Species Gallery
+                </a>
+            </section>
+
+            <!-- Stats Cards -->
+            <section class="stats">
+                <div class="stat-card">
+                    <h3>System</h3>
+                    <div class="stat-content">
+                        <div class="stat-row">
+                            <span>CPU</span>
+                            <span id="cpu-stat">--</span>
+                        </div>
+                        <div class="stat-row">
+                            <span>Memory</span>
+                            <span id="memory-stat">--</span>
+                        </div>
+                        <div class="stat-row">
+                            <span>Disk</span>
+                            <span id="disk-stat">--</span>
+                        </div>
+                        <div class="stat-row">
+                            <span>Images</span>
+                            <span id="images-stat">--</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="stat-card">
+                    <h3>Google Drive</h3>
+                    <div class="stat-content">
+                        <div class="stat-row">
+                            <span>Status</span>
+                            <span id="drive-status">--</span>
+                        </div>
+                        <div class="stat-row">
+                            <span>Folder</span>
+                            <span id="drive-folder">--</span>
+                        </div>
+                        <div class="stat-row">
+                            <span>Uploaded</span>
+                            <span id="drive-uploaded">--</span>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Recent Images -->
+            <section class="images-section">
+                <h2>Recent Captures</h2>
+                <div class="images-grid" id="images-grid">
+                    <!-- Images will be loaded here -->
+                </div>
+            </section>
+
+            <!-- Logs -->
+            <section class="logs-section">
+                <div class="logs-header">
+                    <h2>Recent Logs</h2>
+                    <label class="toggle">
+                        <input type="checkbox" id="autoscroll-toggle" checked>
+                        <span class="toggle-slider"></span>
+                        <span class="toggle-label">Auto-scroll</span>
+                    </label>
+                </div>
+                <div class="logs-container" id="logs-container">
+                    <!-- Logs will be loaded here -->
+                </div>
+            </section>
+        </div>
+
+    </div>
+
+    <!-- Image Viewer Modal -->
+    <div id="image-modal" class="modal">
+        <div class="modal-content">
+            <span class="close">&times;</span>
+            <img id="modal-image" src="" alt="Bird capture">
+            <p id="modal-caption"></p>
+        </div>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>

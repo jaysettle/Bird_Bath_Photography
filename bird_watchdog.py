@@ -19,7 +19,7 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler('/home/jaysettle/JayModel/MotionRevamp/logs/watchdog.log')
+        logging.FileHandler(Path(__file__).parent / 'logs' / 'watchdog.log')
     ]
 )
 logger = logging.getLogger(__name__)
@@ -35,7 +35,7 @@ class BirdDetectionWatchdog:
         self.max_restarts = 10    # Maximum restarts per hour
         self.restart_count = 0
         self.last_restart_time = 0
-        self.working_dir = "/home/jaysettle/JayModel/MotionRevamp"
+        self.working_dir = str(Path(__file__).parent)
         self.script_path = os.path.join(self.working_dir, "main.py")
         
         # Ensure logs directory exists

@@ -363,6 +363,39 @@ class CameraController:
             logger.error(f"Error getting captured image: {e}")
             return None
     
+    def get_device_info(self):
+        """Get camera device information"""
+        if not self.device:
+            return {
+                'name': 'Disconnected',
+                'usb_speed': 'Not Connected',
+                'sensor_resolution': 'Unknown',
+                'connected': False
+            }
+        
+        try:
+            # Get sensor resolution string
+            resolution_display = {
+                '4k': '4056x3040',
+                '12mp': '4056x3040',
+                '1080p': '1920x1080'
+            }
+            
+            return {
+                'name': self.device.getDeviceName() or 'OAK Camera',
+                'usb_speed': self.device.getUsbSpeed().name,
+                'sensor_resolution': resolution_display.get(self.config['resolution'], '4056x3040'),
+                'connected': True
+            }
+        except Exception as e:
+            logger.error(f"Error getting device info: {e}")
+            return {
+                'name': 'Error',
+                'usb_speed': 'Unknown',
+                'sensor_resolution': 'Unknown',
+                'connected': False
+            }
+    
     def set_roi(self, start_pt, end_pt):
         """Set motion detection ROI"""
         self.roi_start_pt = start_pt
@@ -412,6 +445,11 @@ class CameraController:
     def update_camera_setting(self, setting, value):
         """Update camera setting"""
         try:
+            # Check if camera is connected
+            if not self.control_queue:
+                logger.debug(f"Camera not connected yet, skipping {setting} update")
+                return
+                
             with self.control_lock:
                 current_time = time.time()
                 if current_time - self.last_control_time < self.control_delay:

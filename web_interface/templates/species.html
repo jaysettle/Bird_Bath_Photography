@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>Bird Species Gallery</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <style>
+        .species-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 1rem;
+            padding: 1rem;
+        }
+        
+        .species-card {
+            background-color: var(--bg-card);
+            border-radius: 12px;
+            padding: 1rem;
+            border: 1px solid var(--border);
+        }
+        
+        .species-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: start;
+            margin-bottom: 1rem;
+        }
+        
+        .species-name {
+            flex: 1;
+        }
+        
+        .species-name h3 {
+            font-size: 1.25rem;
+            margin: 0;
+            color: var(--text-primary);
+        }
+        
+        .species-name .scientific {
+            font-style: italic;
+            color: var(--text-secondary);
+            font-size: 0.875rem;
+        }
+        
+        .species-badge {
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+        }
+        
+        .badge-rare {
+            background-color: var(--warning);
+            color: white;
+        }
+        
+        .badge-common {
+            background-color: var(--success);
+            color: white;
+        }
+        
+        .species-stats {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+        }
+        
+        .stat-item {
+            background-color: var(--bg-secondary);
+            padding: 0.5rem;
+            border-radius: 8px;
+            text-align: center;
+        }
+        
+        .stat-value {
+            font-size: 1.5rem;
+            font-weight: 600;
+            color: var(--accent);
+        }
+        
+        .stat-label {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+        }
+        
+        .species-info {
+            font-size: 0.875rem;
+            line-height: 1.5;
+            color: var(--text-secondary);
+        }
+        
+        .fun-fact {
+            background-color: var(--bg-secondary);
+            padding: 0.75rem;
+            border-radius: 8px;
+            margin-top: 0.5rem;
+            font-style: italic;
+        }
+        
+        .conservation-status {
+            display: inline-block;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            margin-top: 0.5rem;
+        }
+        
+        .status-LC { background-color: #4caf50; color: white; }
+        .status-NT { background-color: #8bc34a; color: white; }
+        .status-VU { background-color: #ffeb3b; color: black; }
+        .status-EN { background-color: #ff9800; color: white; }
+        .status-CR { background-color: #f44336; color: white; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header>
+            <div class="header-left">
+                <h1>Bird Species Gallery</h1>
+                <div class="timestamp" id="current-time">00:00:00</div>
+            </div>
+            <a href="/" class="action-btn secondary" style="padding: 0.5rem 1rem; text-decoration: none;">
+                Back to Dashboard
+            </a>
+        </header>
+
+        <!-- Summary Stats -->
+        <section class="stats" style="padding: 1rem;">
+            <div class="stat-card">
+                <h3>Species Diversity</h3>
+                <div class="stat-content">
+                    <div class="stat-row">
+                        <span>Total Species</span>
+                        <span id="total-species">--</span>
+                    </div>
+                    <div class="stat-row">
+                        <span>Total Sightings</span>
+                        <span id="total-sightings">--</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Species Grid -->
+        <section class="species-grid" id="species-grid">
+            <!-- Species cards will be loaded here -->
+        </section>
+    </div>
+
+    <script>
+        // Update timestamp
+        function updateTimestamp() {
+            const timestampEl = document.getElementById('current-time');
+            if (timestampEl) {
+                const now = new Date();
+                timestampEl.textContent = now.toLocaleTimeString('en-US', { 
+                    hour12: false,
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit'
+                });
+            }
+        }
+        
+        // Load species data
+        async function loadSpecies() {
+            try {
+                const response = await fetch('/api/species');
+                const data = await response.json();
+                
+                if (data.success) {
+                    // Update summary stats
+                    document.getElementById('total-species').textContent = data.total_species;
+                    document.getElementById('total-sightings').textContent = data.total_sightings;
+                    
+                    // Render species cards
+                    const grid = document.getElementById('species-grid');
+                    grid.innerHTML = '';
+                    
+                    Object.entries(data.species_list || {}).forEach(([scientific, species]) => {
+                        const isRare = species.sighting_count < 3;
+                        const card = document.createElement('div');
+                        card.className = 'species-card';
+                        
+                        const statusMap = {
+                            'LC': 'Least Concern',
+                            'NT': 'Near Threatened',
+                            'VU': 'Vulnerable',
+                            'EN': 'Endangered',
+                            'CR': 'Critically Endangered'
+                        };
+                        
+                        card.innerHTML = `
+                            <div class="species-header">
+                                <div class="species-name">
+                                    <h3>${species.common_name || 'Unknown'}</h3>
+                                    <div class="scientific">${scientific}</div>
+                                </div>
+                                <span class="species-badge ${isRare ? 'badge-rare' : 'badge-common'}">
+                                    ${isRare ? 'RARE' : 'COMMON'}
+                                </span>
+                            </div>
+                            
+                            <div class="species-stats">
+                                <div class="stat-item">
+                                    <div class="stat-value">${species.sighting_count}</div>
+                                    <div class="stat-label">Sightings</div>
+                                </div>
+                                <div class="stat-item">
+                                    <div class="stat-value">${formatDate(species.first_seen)}</div>
+                                    <div class="stat-label">First Seen</div>
+                                </div>
+                            </div>
+                            
+                            <div class="species-info">
+                                ${species.characteristics ? 
+                                    `<strong>Characteristics:</strong> ${species.characteristics.join(', ')}<br>` : ''}
+                                ${species.conservation_status ? 
+                                    `<span class="conservation-status status-${species.conservation_status}">
+                                        ${statusMap[species.conservation_status] || species.conservation_status}
+                                    </span>` : ''}
+                                ${species.fun_facts && species.fun_facts[0] ? 
+                                    `<div class="fun-fact">💡 ${species.fun_facts[0]}</div>` : ''}
+                            </div>
+                        `;
+                        
+                        grid.appendChild(card);
+                    });
+                }
+            } catch (error) {
+                console.error('Error loading species:', error);
+            }
+        }
+        
+        function formatDate(isoDate) {
+            if (!isoDate) return '--';
+            const date = new Date(isoDate);
+            return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        }
+        
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            updateTimestamp();
+            setInterval(updateTimestamp, 1000);
+            loadSpecies();
+            setInterval(loadSpecies, 30000); // Refresh every 30 seconds
+        });
+    </script>
+</body>
+</html>

@@ -10,6 +10,12 @@ A comprehensive bird detection and monitoring system using OAK-D camera with PyQ
 - **ROI Selection** - Drag-to-select region of interest on preview
 - **Real-time Preview** - Live camera feed with motion detection overlay
 
+### 🤖 **AI Bird Identification**
+- **OpenAI Vision API** - Automatic species identification
+- **Species Database** - Track identified birds and sightings
+- **Web Gallery** - View identified species via mobile interface
+- **Conservation Focus** - Designed to help with bird monitoring
+
 ### 🌙 **Modern UI**
 - **Dark Theme** - Professional dark mode interface
 - **Tabbed Interface** - Camera, Services, and Logs tabs
@@ -20,6 +26,12 @@ A comprehensive bird detection and monitoring system using OAK-D camera with PyQ
 - **Google Drive Upload** - Automatic image uploads to specified folder
 - **Email Notifications** - Motion capture alerts with attachments
 - **Hourly Reports** - Summary emails with captured images
+
+### 📱 **Mobile Web Interface**
+- **Dark Mode** - iPhone optimized interface
+- **Species Gallery** - Browse identified birds
+- **System Control** - Restart application remotely
+- **Real-time Status** - Live system monitoring
 
 ### 🔧 **System Management**
 - **Service Monitoring** - Real-time status of all system services
@@ -56,13 +68,29 @@ A comprehensive bird detection and monitoring system using OAK-D camera with PyQ
    ```
 
 4. **Configure the system:**
-   - Edit `config.json` with your email settings
-   - Add Google Drive service account credentials (optional)
+   ```bash
+   # Copy and edit configuration
+   cp config.example.json config.json
+   nano config.json
+   ```
+   - Add your email settings and app password
+   - Add OpenAI API key for bird identification (optional)
+   - Add Google Drive OAuth2 credentials (optional)
    - Adjust camera and motion detection settings
 
 5. **Run the application:**
    ```bash
    python3 main.py
+   ```
+
+6. **Access mobile interface (optional):**
+   ```bash
+   # Start web server
+   cd web_interface
+   python3 server.py
+   
+   # Access via mobile browser
+   # http://[raspberry-pi-ip]:5000
    ```
 
 ### Watchdog Service (Optional)
@@ -93,12 +121,15 @@ Update `config.json` with your email configuration:
 }
 ```
 
-### Google Drive Setup
+### Google Drive Setup (OAuth2)
 1. Create a Google Cloud project
 2. Enable Google Drive API
-3. Create a service account
-4. Download `service_account.json` to project root
+3. Create OAuth2 credentials for desktop application
+4. Download `client_secret.json` to project root
 5. Enable drive upload in `config.json`
+6. Run application - it will prompt for Google Drive authorization
+
+For detailed setup instructions, see `OAUTH_SETUP.md`
 
 ### Camera Settings
 - **Exposure**: Auto or manual control
