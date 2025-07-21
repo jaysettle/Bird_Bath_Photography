@@ -91,8 +91,14 @@ def setup_logging(config_path=None):
     else:
         log_config = {}
     
-    # Get log level
-    level = getattr(logging, log_config.get('level', 'INFO'))
+    # Check if logging is enabled
+    logging_enabled = log_config.get('enabled', True)
+    
+    # Get log level - if disabled, only show errors and critical
+    if logging_enabled:
+        level = getattr(logging, log_config.get('level', 'INFO'))
+    else:
+        level = logging.ERROR  # Only show errors when disabled
     
     # Create logs directory
     log_dir = Path(__file__).parent.parent / 'logs'
@@ -105,34 +111,69 @@ def setup_logging(config_path=None):
     # Clear existing handlers
     root_logger.handlers.clear()
     
-    # File handler with rotation
-    file_handler = logging.handlers.RotatingFileHandler(
-        log_dir / 'bird_detection.log',
-        maxBytes=10*1024*1024,  # 10MB
-        backupCount=log_config.get('backup_count', 5)
-    )
-    file_formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
-    file_handler.setFormatter(file_formatter)
-    root_logger.addHandler(file_handler)
-    
-    # Console handler with colors
-    console_handler = ColoredConsoleHandler()
-    root_logger.addHandler(console_handler)
-    
-    # Systemd journal handler
-    if log_config.get('journal_integration', True):
-        journal_handler = SystemdJournalHandler()
-        journal_formatter = logging.Formatter('%(name)s: %(message)s')
-        journal_handler.setFormatter(journal_formatter)
-        root_logger.addHandler(journal_handler)
+    # Add handlers based on logging enabled state
+    if logging_enabled:
+        # File handler with rotation (full logging)
+        file_handler = logging.handlers.RotatingFileHandler(
+            log_dir / 'bird_detection.log',
+            maxBytes=10*1024*1024,  # 10MB
+            backupCount=log_config.get('backup_count', 5)
+        )
+        file_formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        file_handler.setFormatter(file_formatter)
+        root_logger.addHandler(file_handler)
+        
+        # Console handler with colors
+        console_handler = ColoredConsoleHandler()
+        root_logger.addHandler(console_handler)
+        
+        # Systemd journal handler
+        if log_config.get('journal_integration', True):
+            journal_handler = SystemdJournalHandler()
+            journal_formatter = logging.Formatter('%(name)s: %(message)s')
+            journal_handler.setFormatter(journal_formatter)
+            root_logger.addHandler(journal_handler)
+    else:
+        # Minimal logging - only file handler for errors
+        file_handler = logging.handlers.RotatingFileHandler(
+            log_dir / 'bird_detection.log',
+            maxBytes=10*1024*1024,  # 10MB
+            backupCount=2  # Fewer backups for performance
+        )
+        file_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+        file_handler.setFormatter(file_formatter)
+        file_handler.setLevel(logging.ERROR)  # Only errors to file
+        root_logger.addHandler(file_handler)
     
     return root_logger
 
 def get_logger(name):
     """Get a logger for a specific module"""
     return logging.getLogger(name)
+
+def set_logging_enabled(enabled, config_path=None):
+    """Dynamically enable/disable logging"""
+    # Update config file
+    if config_path and os.path.exists(config_path):
+        with open(config_path, 'r') as f:
+            config = json.load(f)
+        
+        config.setdefault('logging', {})['enabled'] = enabled
+        
+        with open(config_path, 'w') as f:
+            json.dump(config, f, indent=4)
+    
+    # Re-setup logging with new configuration
+    setup_logging(config_path)
+    
+    # Log the change (this will only show if logging is enabled)
+    logger = get_logger(__name__)
+    if enabled:
+        logger.info("Logging enabled - full verbosity restored")
+    else:
+        logger.error("Logging disabled - only errors will be recorded")
 
 # Log viewer for GUI
 class LogBuffer:

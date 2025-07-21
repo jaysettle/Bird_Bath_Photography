@@ -274,6 +274,13 @@ class SpeciesTab(QWidget):
         """Start asynchronous thumbnail loading with custom key"""
         if key in self.thumbnail_loaders:
             return  # Already loading this thumbnail
+        
+        # Limit concurrent thumbnail loading to prevent excessive thread creation
+        MAX_CONCURRENT_LOADERS = 6
+        if len(self.thumbnail_loaders) >= MAX_CONCURRENT_LOADERS:
+            logger.debug(f"Thumbnail loader limit reached ({MAX_CONCURRENT_LOADERS}), skipping load")
+            # Just skip loading instead of deferring to avoid potential recursion
+            return
             
         loader = ThumbnailLoader(image_path)
         loader.thumbnail_loaded.connect(lambda path, pixmap: self.on_thumbnail_loaded_with_key(key, pixmap))
@@ -301,6 +308,11 @@ class SpeciesTab(QWidget):
         """Clean up finished loader thread"""
         if image_path in self.thumbnail_loaders:
             loader = self.thumbnail_loaders.pop(image_path)
+            try:
+                loader.terminate()  # Force terminate if still running
+                loader.wait(100)    # Wait up to 100ms for cleanup
+            except:
+                pass
             loader.deleteLater()
     
     def show_full_image(self, image_path):

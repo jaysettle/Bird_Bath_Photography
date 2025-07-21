@@ -165,8 +165,9 @@ from src.drive_uploader_simple import CombinedUploader
 from src.ai_bird_identifier import AIBirdIdentifier
 from src.species_tab import SpeciesTab
 
-# Set up logging
-setup_logging()
+# Set up logging with configuration
+config_path = os.path.join(os.path.dirname(__file__), 'config.json')
+setup_logging(config_path)
 setup_gui_logging()
 logger = get_logger(__name__)
 
@@ -613,7 +614,9 @@ class CameraTab(QWidget):
         """)
         
         stats_layout = QGridLayout()
-        stats_layout.setSpacing(8)
+        stats_layout.setSpacing(3)  # Reduced spacing for more compact layout
+        stats_layout.setVerticalSpacing(2)  # Tighter vertical spacing
+        stats_layout.setHorizontalSpacing(8)  # Keep horizontal spacing readable
         
         # Camera Info Section
         row = 0
@@ -689,7 +692,7 @@ class CameraTab(QWidget):
         # Set up timer to update stats periodically
         self.stats_timer = QTimer()
         self.stats_timer.timeout.connect(self.update_camera_stats)
-        self.stats_timer.start(2000)  # Update every 2 seconds
+        self.stats_timer.start(5000)  # Update every 5 seconds to reduce CPU load
         
         # Initial update
         self.update_camera_stats()
@@ -974,7 +977,7 @@ class ServicesTab(QWidget):
         # Update uptime every second
         self.uptime_timer = QTimer()
         self.uptime_timer.timeout.connect(self.update_uptime)
-        self.uptime_timer.start(1000)
+        self.uptime_timer.start(5000)  # Update every 5 seconds to reduce CPU load
         self.update_uptime()
     
     def cleanup(self):
@@ -1282,34 +1285,53 @@ class ServicesTab(QWidget):
             self.email_queue.setText(str(queue_size))
     
     def update_storage_status(self):
-        """Update storage information"""
+        """Update storage information with caching to reduce CPU usage"""
         try:
-            storage_dir = self.config.get('storage', {}).get('save_dir', str(Path.home() / 'BirdPhotos'))
-            if os.path.exists(storage_dir):
-                # Calculate total size and file count
-                total_size = 0
-                file_count = 0
-                
-                for root, dirs, files in os.walk(storage_dir):
-                    for file in files:
-                        if file.lower().endswith(('.jpg', '.jpeg', '.png')):
-                            file_path = os.path.join(root, file)
-                            try:
-                                total_size += os.path.getsize(file_path)
-                                file_count += 1
-                            except OSError:
-                                pass
-                
-                # Convert to GB
-                size_gb = total_size / (1024**3)
-                
-                # Update labels
+            # Add caching to reduce expensive file system operations
+            if not hasattr(self, '_storage_stats_cache'):
+                self._storage_stats_cache = {'count': 0, 'size': 0, 'last_update': 0}
+            
+            # Only recalculate every 30 seconds to reduce CPU load
+            current_time = time.time()
+            if current_time - self._storage_stats_cache['last_update'] > 30:
+                storage_dir = self.config.get('storage', {}).get('save_dir', str(Path.home() / 'BirdPhotos'))
+                if os.path.exists(storage_dir):
+                    # Calculate total size and file count
+                    total_size = 0
+                    file_count = 0
+                    
+                    for root, dirs, files in os.walk(storage_dir):
+                        for file in files:
+                            if file.lower().endswith(('.jpg', '.jpeg', '.png')):
+                                file_path = os.path.join(root, file)
+                                try:
+                                    total_size += os.path.getsize(file_path)
+                                    file_count += 1
+                                except OSError:
+                                    pass
+                    
+                    self._storage_stats_cache = {
+                        'count': file_count,
+                        'size': total_size,
+                        'last_update': current_time
+                    }
+                else:
+                    self._storage_stats_cache = {'count': 0, 'size': 0, 'last_update': current_time}
+            
+            # Use cached values
+            total_size = self._storage_stats_cache['size']
+            file_count = self._storage_stats_cache['count']
+            
+            # Convert to GB
+            size_gb = total_size / (1024**3)
+            
+            # Update labels
+            if self._storage_stats_cache['count'] > 0 or self._storage_stats_cache['size'] > 0:
                 self.storage_used.setText(f"{size_gb:.2f} GB")
                 self.file_count.setText(str(file_count))
             else:
                 self.storage_used.setText("Directory not found")
                 self.file_count.setText("0")
-                
         except Exception as e:
             logger.error(f"Error updating storage status: {e}")
             self.storage_used.setText("Error")
@@ -1512,6 +1534,9 @@ class ConfigTab(QWidget):
         # System Management
         self.create_system_section(scroll_layout)
         
+        # Logging Configuration
+        self.create_logging_section(scroll_layout)
+        
         # Save/Apply buttons
         self.create_buttons_section(scroll_layout)
         
@@ -1681,6 +1706,34 @@ class ConfigTab(QWidget):
         QTimer.singleShot(1000, self.check_watchdog_status)
         QTimer.singleShot(1000, self.check_management_status)
     
+    def create_logging_section(self, layout):
+        """Create logging configuration section"""
+        group = QGroupBox("Logging Settings")
+        group_layout = QGridLayout()
+        
+        # Logging enabled checkbox
+        group_layout.addWidget(QLabel("Enable Verbose Logging:"), 0, 0)
+        self.logging_enabled = QCheckBox()
+        self.logging_enabled.setToolTip(
+            "When enabled: Full logging (INFO, DEBUG, WARNING, ERROR)\n"
+            "When disabled: Only errors logged (better performance)"
+        )
+        self.logging_enabled.toggled.connect(self.on_logging_toggled)
+        group_layout.addWidget(self.logging_enabled, 0, 1)
+        
+        # Status indicator
+        self.logging_status = QLabel("Status: Enabled")
+        self.logging_status.setStyleSheet("color: #4CAF50; font-weight: bold;")
+        group_layout.addWidget(self.logging_status, 1, 0, 1, 2)
+        
+        # Performance note
+        note = QLabel("💡 Disable logging to improve performance during normal operation")
+        note.setStyleSheet("color: #888; font-size: 11px; font-style: italic;")
+        group_layout.addWidget(note, 2, 0, 1, 2)
+        
+        group.setLayout(group_layout)
+        layout.addWidget(group)
+    
     def create_buttons_section(self, layout):
         button_layout = QHBoxLayout()
         
@@ -1722,6 +1775,12 @@ class ConfigTab(QWidget):
         self.openai_enabled.setChecked(openai_config.get('enabled', False))
         self.openai_key.setText(openai_config.get('api_key', ''))
         self.openai_limit.setValue(openai_config.get('max_images_per_hour', 10))
+        
+        # Logging settings
+        logging_config = self.config.get('logging', {})
+        logging_enabled = logging_config.get('enabled', True)
+        self.logging_enabled.setChecked(logging_enabled)
+        self.update_logging_status(logging_enabled)
     
     def browse_storage_dir(self):
         """Browse for storage directory"""
@@ -1955,6 +2014,39 @@ class ConfigTab(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to open logs: {str(e)}")
     
+    def on_logging_toggled(self, enabled):
+        """Handle logging toggle"""
+        try:
+            from src.logger import set_logging_enabled
+            
+            # Update configuration and re-setup logging
+            config_path = self.config_manager.config_path
+            set_logging_enabled(enabled, config_path)
+            
+            # Update UI
+            self.update_logging_status(enabled)
+            
+            # Reload config
+            self.config_manager.load_config()
+            self.config = self.config_manager.config
+            
+            # Show confirmation
+            status = "enabled" if enabled else "disabled"
+            QMessageBox.information(self, "Logging Settings", 
+                                  f"Logging has been {status}.\n"
+                                  f"{'Full verbosity restored.' if enabled else 'Only errors will be logged for better performance.'}")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to update logging: {str(e)}")
+    
+    def update_logging_status(self, enabled):
+        """Update the logging status display"""
+        if enabled:
+            self.logging_status.setText("Status: Enabled (Full Logging)")
+            self.logging_status.setStyleSheet("color: #4CAF50; font-weight: bold;")
+        else:
+            self.logging_status.setText("Status: Disabled (Errors Only)")
+            self.logging_status.setStyleSheet("color: #FF9800; font-weight: bold;")
+    
     def save_config(self):
         """Save configuration to file"""
         try:
@@ -2032,7 +2124,7 @@ class LogsTab(QWidget):
         # Timer for log updates
         self.log_timer = QTimer()
         self.log_timer.timeout.connect(self.update_logs)
-        self.log_timer.start(1000)  # Update every second
+        self.log_timer.start(5000)  # Update every 5 seconds to reduce CPU load
         
     def setup_ui(self):
         """Setup the logs tab UI"""
@@ -2101,7 +2193,7 @@ class MainWindow(QMainWindow):
         # Clock timer
         self.clock_timer = QTimer()
         self.clock_timer.timeout.connect(self.update_clock)
-        self.clock_timer.start(1000)  # Update every second
+        self.clock_timer.start(10000)  # Update every 10 seconds to reduce CPU load
         
         # Load configuration
         self.config_manager = ConfigManager()
