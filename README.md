@@ -56,9 +56,7 @@ No JSON editing required - everything is configured through the GUI.
 
 ## Mobile Interface
 
-Access your bird monitoring system from anywhere:
-- Real-time camera preview
-- Species photo galleries  
+Access your bird monitoring system from your network:  
 - Detection statistics
 - System status
 
