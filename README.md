@@ -1,218 +1,77 @@
-# Bird Detection System
+# 🐦 AI Bird Photography System
 
-A comprehensive bird detection and monitoring system using OAK-D camera with PyQt6 GUI, automatic Google Drive uploads, and email notifications.
+Automatically photograph and identify birds at your bird bath using AI and computer vision.
 
-## Features
+![Features](https://img.shields.io/badge/Features-AI%20Identification-blue) ![Platform](https://img.shields.io/badge/Platform-Raspberry%20Pi-red) ![Mobile](https://img.shields.io/badge/Mobile-Web%20Interface-green)
 
-### 🎥 **Camera & Detection**
-- **OAK-D Camera Integration** - 4K image capture with DepthAI
-- **Motion Detection** - Configurable sensitivity and area thresholds
-- **ROI Selection** - Drag-to-select region of interest on preview
-- **Real-time Preview** - Live camera feed with motion detection overlay
+## ✨ What It Does
 
-### 🤖 **AI Bird Identification**
-- **OpenAI Vision API** - Automatic species identification
-- **Species Database** - Track identified birds and sightings
-- **Web Gallery** - View identified species via mobile interface
-- **Conservation Focus** - Designed to help with bird monitoring
+- 🤖 **AI identifies bird species** using OpenAI Vision API
+- 📸 **Automatic photography** with motion detection  
+- 🖼️ **Species galleries** with photo collections
+- 📱 **Mobile web interface** for remote monitoring
+- ☁️ **Google Drive backup** (optional)
+- 📧 **Email reports** with daily summaries
+- 🗑️ **Smart cleanup** - deletes non-bird photos
 
-### 🌙 **Modern UI**
-- **Dark Theme** - Professional dark mode interface
-- **Tabbed Interface** - Camera, Services, and Logs tabs
-- **Interactive Controls** - Sliders for camera settings and motion detection
-- **Real-time Status** - Live monitoring of all services
-
-### 📤 **Cloud Integration**
-- **Google Drive Upload** - Automatic image uploads to specified folder
-- **Email Notifications** - Motion capture alerts with attachments
-- **Hourly Reports** - Summary emails with captured images
-
-### 📱 **Mobile Web Interface**
-- **Dark Mode** - iPhone optimized interface
-- **Species Gallery** - Browse identified birds
-- **System Control** - Restart application remotely
-- **Real-time Status** - Live system monitoring
-
-### 🔧 **System Management**
-- **Service Monitoring** - Real-time status of all system services
-- **Storage Management** - Automatic cleanup and space monitoring
-- **Configuration UI** - Easy toggle switches for all features
-- **Watchdog Service** - Automatic restart on crashes
-
-## Quick Start
-
-### Prerequisites
-- Raspberry Pi (tested on Pi 5)
-- OAK-D camera
-- Python 3.8+
-- PyQt6
-- Google Drive API credentials (optional)
-
-### Installation
-
-1. **Clone the repository:**
-   ```bash
-   git clone https://github.com/yourusername/bird-detection-system.git
-   cd bird-detection-system
-   ```
-
-2. **Install system dependencies:**
-   ```bash
-   sudo apt update
-   sudo apt install python3-pyqt6 python3-systemd python3-watchdog
-   ```
-
-3. **Install Python dependencies:**
-   ```bash
-   pip3 install -r requirements.txt
-   ```
-
-4. **Configure the system:**
-   ```bash
-   # Copy and edit configuration
-   cp config.example.json config.json
-   nano config.json
-   ```
-   - Add your email settings and app password
-   - Add OpenAI API key for bird identification (optional)
-   - Add Google Drive OAuth2 credentials (optional)
-   - Adjust camera and motion detection settings
-
-5. **Run the application:**
-   ```bash
-   python3 main.py
-   ```
-
-6. **Access mobile interface (optional):**
-   ```bash
-   # Start web server
-   cd web_interface
-   python3 server.py
-   
-   # Access via mobile browser
-   # http://[raspberry-pi-ip]:5000
-   ```
-
-### Watchdog Service (Optional)
-
-For 24/7 operation with automatic restart:
+## 🚀 Quick Start
 
 ```bash
-# Install the watchdog service
-./install_watchdog.sh
-
-# Start the watchdog
-sudo systemctl start bird-detection-watchdog.service
+git clone https://github.com/jaysettle/Bird_Bath_Photography.git
+cd Bird_Bath_Photography
+./install.sh
+python3 main.py
 ```
 
-## Configuration
+That's it! The app creates all config files automatically.
 
-### Email Settings
-Update `config.json` with your email configuration:
-```json
-{
-  "email": {
-    "sender": "your-email@gmail.com",
-    "password": "your-app-password",
-    "receivers": {
-      "primary": "recipient@gmail.com"
-    }
-  }
-}
-```
+## 🎛️ Setup
 
-### Google Drive Setup (OAuth2)
-1. Create a Google Cloud project
-2. Enable Google Drive API
-3. Create OAuth2 credentials for desktop application
-4. Download `client_secret.json` to project root
-5. Enable drive upload in `config.json`
-6. Run application - it will prompt for Google Drive authorization
+1. **Connect your OAK-D camera**
+2. **Run the app** - it opens a GUI window
+3. **Go to Configuration tab** to set up:
+   - OpenAI API key (for bird identification)
+   - Email settings (for reports)  
+   - Google Drive (for cloud backup)
+4. **Position camera** 6-8 feet from your bird bath
+5. **View species** on mobile at `http://your-pi-ip:5000`
 
-For detailed setup instructions, see `OAUTH_SETUP.md`
+No JSON editing required - everything is configured through the GUI!
 
-### Camera Settings
-- **Exposure**: Auto or manual control
-- **ISO**: Min/max range settings
-- **Focus**: Auto or manual focus
-- **Resolution**: 4K capture mode
+## 📋 Requirements
 
-### Motion Detection
-- **Sensitivity**: Threshold for motion detection
-- **Min Area**: Minimum area for motion triggers
-- **ROI**: Drag rectangle on preview to set region
-- **Debounce**: Delay between captures
+- **Raspberry Pi 4/5** (4GB+ RAM recommended)
+- **OAK-D Camera** (DepthAI compatible)
+- **Internet connection**
+- **OpenAI API key** (for bird identification)
 
-## Architecture
+## 🎯 Key Features
 
-```
-├── main.py                 # Main application with PyQt6 GUI
-├── src/
-│   ├── camera_controller.py    # OAK-D camera management
-│   ├── drive_uploader_simple.py # Google Drive integration
-│   ├── email_handler.py        # Email notifications
-│   ├── cleanup_manager.py      # Storage cleanup
-│   └── logger.py              # Logging utilities
-├── services/               # Systemd service files
-├── config.json            # Main configuration
-└── bird_watchdog.py       # Watchdog service
-```
+| Feature | Description |
+|---------|-------------|
+| 🔍 **Motion Detection** | Automatic bird photography with ROI selection |
+| 🤖 **AI Identification** | Species recognition with confidence scores |
+| 📊 **Statistics** | Track species diversity and counts |
+| 🔄 **Auto-Restart** | Watchdog service keeps system running |
+| ⚡ **Performance** | Logging toggle for optimal speed |
+| 🛡️ **Resilient** | Continues working even if services fail |
 
-## Usage
+## 📱 Mobile Interface
 
-### Basic Operation
-1. **Start the application** - `python3 main.py`
-2. **Set ROI** - Drag on camera preview to select detection area
-3. **Adjust settings** - Use sliders to fine-tune detection
-4. **Monitor services** - Check Services tab for status
-5. **View logs** - Real-time logs in Logs tab
+Access your bird monitoring system from anywhere:
+- Real-time camera preview
+- Species photo galleries  
+- Detection statistics
+- System status
 
-### Service Management
-- **Toggle uploads** - Enable/disable Google Drive in Services tab
-- **Email settings** - Configure notifications and reports
-- **Storage cleanup** - Automatic old file removal
-- **System monitoring** - Service status and queue sizes
+## 🤝 Contributing
 
-## Troubleshooting
+This is an open-source bird conservation project. Contributions welcome!
 
-### Common Issues
+## 📄 License
 
-**Camera not detected:**
-```bash
-# Check camera connection
-lsusb | grep -i luxonis
-```
+Open source - use responsibly for bird conservation and education.
 
-**Email not working:**
-- Verify Gmail app password
-- Check SMTP settings in config
-- Review email logs
+---
 
-**Drive upload failing:**
-- Check service account permissions
-- Verify storage quota
-- Review drive folder permissions
-
-### Logs
-- **Application logs**: `logs/bird_detection.log`
-- **Watchdog logs**: `logs/watchdog.log`
-- **System logs**: `sudo journalctl -u bird-detection-watchdog.service`
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Test thoroughly
-5. Submit a pull request
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Acknowledgments
-
-- **DepthAI** for OAK-D camera support
-- **PyQt6** for the GUI framework
-- **Google Drive API** for cloud storage
-- **Raspberry Pi Foundation** for the hardware platform
+**🔧 Need help?** Check `INSTALLATION.md` for detailed setup instructions.

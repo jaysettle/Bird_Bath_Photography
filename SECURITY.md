@@ -1,16 +1,20 @@
 # 🔒 Security Configuration Guide
 
-## 📋 Required Setup Steps
+## 📋 Quick Setup (Recommended)
 
-### 1. Create Your Configuration File
-```bash
-# Copy the example configuration
-cp config.example.json config.json
-```
+### 1. Use the GUI Configuration
+The easiest way to configure all settings:
 
-### 2. Add Your API Keys and Credentials
+1. Run the app: `python3 main.py`
+2. Go to **Configuration tab**
+3. Enter your API keys and settings in the GUI
+4. Click **Save Configuration**
 
-Edit `config.json` with your actual values:
+The app automatically creates and manages `config.json` for you!
+
+## ⚙️ Manual Configuration (Advanced)
+
+If you need to edit config files directly:
 
 #### OpenAI API Key
 ```json
