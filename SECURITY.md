@@ -1,6 +1,6 @@
-# 🔒 Security Configuration Guide
+# Security Configuration Guide
 
-## 📋 Quick Setup (Recommended)
+## Quick Setup (Recommended)
 
 ### 1. Use the GUI Configuration
 The easiest way to configure all settings:
@@ -12,7 +12,7 @@ The easiest way to configure all settings:
 
 The app automatically creates and manages `config.json` for you!
 
-## ⚙️ Manual Configuration (Advanced)
+## Manual Configuration (Advanced)
 
 If you need to edit config files directly:
 
@@ -45,7 +45,7 @@ If you need to edit config files directly:
 }
 ```
 
-## 🛡️ Security Best Practices
+## Security Best Practices
 
 ### API Keys
 - **OpenAI**: Get your API key from https://platform.openai.com/api-keys
@@ -74,7 +74,7 @@ EOF
 chmod 600 .env
 ```
 
-## ⚠️ Important Security Notes
+## Important Security Notes
 
 ### Never Commit Secrets
 - `config.json` is in `.gitignore` - keep it there!
@@ -96,17 +96,17 @@ chmod 600 .env
 - Monitor your API usage on service dashboards
 - Check logs for any unusual activity
 
-## 🚨 If You Accidentally Expose Secrets
+## If You Accidentally Expose Secrets
 
 1. **Change the compromised keys immediately**
 2. **Revoke old keys** on the service dashboards
 3. **Update your config.json** with new keys
 4. **Monitor for any unauthorized usage**
 
-## 📞 Getting Help
+## Getting Help
 
 - OpenAI API issues: https://help.openai.com/
 - Gmail App Password: https://support.google.com/accounts/answer/185833
 - Google Drive API: https://developers.google.com/drive/api/guides/about-auth
 
-Remember: Keep your credentials secure and never share them publicly! 🔐
+Remember: Keep your credentials secure and never share them publicly!
