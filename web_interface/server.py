@@ -418,6 +418,25 @@ def api_species():
             'error': str(e)
         }), 500
 
+def find_available_port(start_port=8080, max_attempts=10):
+    """Find an available port starting from start_port"""
+    import socket
+    for port in range(start_port, start_port + max_attempts):
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(('0.0.0.0', port))
+                return port
+        except OSError:
+            continue
+    return None
+
 if __name__ == '__main__':
+    # Find available port
+    port = find_available_port(8080)
+    if port is None:
+        print("ERROR: No available ports found in range 8080-8089", file=sys.stderr)
+        sys.exit(1)
+    
+    print(f"Starting server on port {port}")
     # Run on all interfaces so it's accessible from iPhone
-    app.run(host='0.0.0.0', port=8080, debug=False)
+    app.run(host='0.0.0.0', port=port, debug=False)

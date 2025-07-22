@@ -28,15 +28,26 @@ class ThumbnailLoader(QThread):
         
     def run(self):
         try:
+            logger.debug(f"ThumbnailLoader: Starting to load {self.image_path}")
             if os.path.exists(self.image_path):
+                logger.debug(f"ThumbnailLoader: File exists, loading pixmap")
                 pixmap = QPixmap(self.image_path)
                 if not pixmap.isNull():
+                    logger.debug(f"ThumbnailLoader: Pixmap loaded successfully, scaling")
                     # Pre-scale to thumbnail size to reduce memory usage
                     scaled = pixmap.scaled(100, 100, Qt.AspectRatioMode.KeepAspectRatio,
                                          Qt.TransformationMode.SmoothTransformation)
+                    logger.debug(f"ThumbnailLoader: Emitting thumbnail_loaded signal")
                     self.thumbnail_loaded.emit(self.image_path, scaled)
+                    logger.debug(f"ThumbnailLoader: Signal emitted successfully")
+                else:
+                    logger.warning(f"Failed to load pixmap for {self.image_path}")
+            else:
+                logger.warning(f"Image file does not exist: {self.image_path}")
         except Exception as e:
             logger.error(f"Error loading thumbnail for {self.image_path}: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
 
 class ClickableLabel(QLabel):
     """Label that emits clicked signal"""
@@ -272,7 +283,10 @@ class SpeciesTab(QWidget):
     
     def load_thumbnail_async_with_key(self, key, image_path):
         """Start asynchronous thumbnail loading with custom key"""
+        logger.debug(f"load_thumbnail_async_with_key called: key={key}, path={image_path}")
+        
         if key in self.thumbnail_loaders:
+            logger.debug(f"Already loading thumbnail for key: {key}")
             return  # Already loading this thumbnail
         
         # Limit concurrent thumbnail loading to prevent excessive thread creation
@@ -281,13 +295,28 @@ class SpeciesTab(QWidget):
             logger.debug(f"Thumbnail loader limit reached ({MAX_CONCURRENT_LOADERS}), skipping load")
             # Just skip loading instead of deferring to avoid potential recursion
             return
-            
+        
+        logger.debug(f"Creating ThumbnailLoader for {image_path}")
         loader = ThumbnailLoader(image_path)
-        loader.thumbnail_loaded.connect(lambda path, pixmap: self.on_thumbnail_loaded_with_key(key, pixmap))
-        loader.finished.connect(lambda: self.cleanup_loader(key))
+        
+        # Create a proper slot for this specific key
+        def on_loaded(path, pixmap, k=key):
+            logger.debug(f"Lambda called for key: {k}")
+            self.on_thumbnail_loaded_with_key(k, pixmap)
+        
+        def on_finished(k=key):
+            logger.debug(f"Cleanup lambda called for key: {k}")
+            self.cleanup_loader_with_key(k)
+        
+        loader.thumbnail_loaded.connect(on_loaded)
+        loader.finished.connect(on_finished)
         
         self.thumbnail_loaders[key] = loader
+        logger.debug(f"Starting thumbnail loader for key: {key}")
         loader.start()
+        
+        # Set a timeout to handle failed loads
+        QTimer.singleShot(5000, lambda: self.handle_thumbnail_timeout(key))
     
     @pyqtSlot(str, QPixmap)
     def on_thumbnail_loaded(self, image_path, pixmap):
@@ -299,10 +328,15 @@ class SpeciesTab(QWidget):
     
     def on_thumbnail_loaded_with_key(self, key, pixmap):
         """Handle completed thumbnail loading with custom key"""
+        logger.debug(f"on_thumbnail_loaded_with_key called with key: {key}")
         if key in self.label_mappings:
+            logger.debug(f"Found label mapping for key: {key}")
             label = self.label_mappings[key]
             label.setPixmap(pixmap)
             label.setText("")  # Clear "Loading..." text
+            logger.debug(f"Thumbnail loaded successfully for key: {key}")
+        else:
+            logger.warning(f"No label mapping found for key: {key}")
     
     def cleanup_loader(self, image_path):
         """Clean up finished loader thread"""
@@ -314,6 +348,27 @@ class SpeciesTab(QWidget):
             except:
                 pass
             loader.deleteLater()
+    
+    def cleanup_loader_with_key(self, key):
+        """Clean up finished loader thread with key"""
+        if key in self.thumbnail_loaders:
+            loader = self.thumbnail_loaders.pop(key)
+            try:
+                loader.terminate()  # Force terminate if still running
+                loader.wait(100)    # Wait up to 100ms for cleanup
+            except:
+                pass
+            loader.deleteLater()
+    
+    def handle_thumbnail_timeout(self, key):
+        """Handle thumbnail loading timeout"""
+        if key in self.thumbnail_loaders and key in self.label_mappings:
+            # Still loading after 5 seconds - show error
+            label = self.label_mappings[key]
+            if label.text() == "Loading...":  # Only if still showing loading
+                label.setText("Failed")
+                label.setStyleSheet("background-color: #444; color: #ff6666; border: 1px solid #777;")
+                logger.warning(f"Thumbnail loading timed out for {key}")
     
     def show_full_image(self, image_path):
         """Show full-size image in dialog"""

@@ -33,21 +33,39 @@ class ConfigManager:
             # Convert any ~ paths to absolute paths
             self._expand_paths()
         except FileNotFoundError:
-            # Try to load from config.example.json as fallback
+            # config.json doesn't exist - create it from config.example.json or defaults
+            print("INFO: config.json not found, creating from template...")
+            
+            # Try to load from config.example.json as template
             example_path = self.config_path.replace('config.json', 'config.example.json')
             try:
                 with open(example_path, 'r') as f:
                     self.config = json.load(f)
-                    # Clear sensitive fields
+                    print("INFO: Loaded configuration template from config.example.json")
+                    
+                    # Clear sensitive fields for new users
                     if 'email' in self.config:
                         self.config['email']['sender'] = ''
                         self.config['email']['password'] = ''
                     if 'openai' in self.config:
                         self.config['openai']['api_key'] = ''
+                        
             except FileNotFoundError:
+                # No example file either - use hardcoded defaults
+                print("INFO: No config.example.json found, using hardcoded defaults")
                 self.config = self._get_default_config()
-                # Expand paths even for default config
-                self._expand_paths()
+                
+            # Expand paths for the loaded config
+            self._expand_paths()
+            
+            # Automatically save as config.json for future use
+            try:
+                with open(self.config_path, 'w') as f:
+                    json.dump(self.config, f, indent=4)
+                print("INFO: Created config.json with default configuration")
+                print("INFO: Please configure your API keys in the Configuration tab")
+            except Exception as e:
+                print(f"ERROR: Failed to create config.json: {e}")
         except Exception as e:
             print(f"Error loading config: {e}")
             self.config = self._get_default_config()
@@ -1841,35 +1859,75 @@ class ConfigTab(QWidget):
                                        f"python3 {setup_script}")
     
     def clear_local_images(self):
-        """Clear all local images"""
+        """Clear all local images and related tracking files"""
         reply = QMessageBox.question(
             self, "Clear Local Images", 
-            "Are you sure you want to delete all local images?",
+            "Are you sure you want to delete all local images?\n\n"
+            "This will also clear the Google Drive upload tracking.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         
         if reply == QMessageBox.StandardButton.Yes:
             try:
                 storage_path = Path(self.storage_dir.text())
+                files_deleted = 0
+                
                 if storage_path.exists():
+                    # Delete image files
                     for img_file in storage_path.glob("*.jpeg"):
                         img_file.unlink()
+                        files_deleted += 1
                     for img_file in storage_path.glob("*.jpg"):
                         img_file.unlink()
-                QMessageBox.information(self, "Success", "Local images cleared!")
+                        files_deleted += 1
+                    
+                    # Delete Google Drive upload tracking file
+                    drive_uploads_file = storage_path / "drive_uploads.json"
+                    if drive_uploads_file.exists():
+                        drive_uploads_file.unlink()
+                        logger.info("Deleted drive_uploads.json tracking file")
+                
+                QMessageBox.information(self, "Success", 
+                    f"Local images cleared!\n\n"
+                    f"Deleted {files_deleted} image files and upload tracking.")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to clear images: {str(e)}")
     
     def clear_drive_images(self):
-        """Clear all Google Drive images"""
+        """Clear all Google Drive images and reset upload tracking"""
         reply = QMessageBox.question(
             self, "Clear Drive Images", 
-            "Are you sure you want to delete all Google Drive images?",
+            "Are you sure you want to delete all Google Drive images?\n\n"
+            "This will also reset the upload tracking so files can be re-uploaded.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         
         if reply == QMessageBox.StandardButton.Yes:
-            QMessageBox.information(self, "Info", "Drive clearing not yet implemented. Use Google Drive web interface.")
+            try:
+                # Reset the drive uploads tracking file
+                storage_path = Path(self.storage_dir.text())
+                drive_uploads_file = storage_path / "drive_uploads.json"
+                
+                # Create empty tracking file
+                empty_tracking = {
+                    "uploaded_files": [],
+                    "last_updated": datetime.now().isoformat()
+                }
+                
+                if drive_uploads_file.exists() or storage_path.exists():
+                    storage_path.mkdir(exist_ok=True)
+                    with open(drive_uploads_file, 'w') as f:
+                        json.dump(empty_tracking, f, indent=2)
+                    logger.info("Reset drive_uploads.json tracking file")
+                
+                # Note: Actual Google Drive deletion would require Drive API implementation
+                QMessageBox.information(self, "Upload Tracking Reset", 
+                    "Google Drive upload tracking has been reset.\n\n"
+                    "Note: To delete files from Google Drive, please use the Google Drive web interface.\n"
+                    "Local files will now be re-uploaded on next sync.")
+                    
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to reset tracking: {str(e)}")
     
     def clear_species_database(self):
         """Clear all identified bird species"""
@@ -1942,18 +2000,103 @@ class ConfigTab(QWidget):
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to run installer: {str(e)}")
     
-    def start_watchdog(self):
-        """Start watchdog service"""
+    def force_shutdown_for_watchdog(self):
+        """Force shutdown of the application for watchdog restart"""
         try:
-            result = subprocess.run(['sudo', 'systemctl', 'start', 'bird-detection-watchdog.service'], 
-                                  capture_output=True, text=True)
-            if result.returncode == 0:
-                QMessageBox.information(self, "Success", "Watchdog service started!")
-                self.check_watchdog_status()
-            else:
-                QMessageBox.critical(self, "Error", f"Failed to start service:\n{result.stderr}")
+            logger.info("Force shutdown requested for watchdog restart")
+            
+            # Immediately stop all timers to prevent new operations
+            if hasattr(self, 'status_timer'):
+                self.status_timer.stop()
+            if hasattr(self, 'slow_timer'):
+                self.slow_timer.stop()
+            
+            # Force stop services quickly
+            try:
+                self.email_handler.stop()
+            except:
+                pass
+            try:
+                self.uploader.stop() 
+            except:
+                pass
+            try:
+                self.service_monitor.stop()
+            except:
+                pass
+            try:
+                self.camera_controller.disconnect()
+            except:
+                pass
+            
+            # Force close camera thread
+            if self.camera_thread:
+                try:
+                    self.camera_thread.stop()
+                    self.camera_thread.wait(1000)  # Wait max 1 second
+                except:
+                    pass
+            
+            # Close web server immediately
+            if hasattr(self, 'web_server_process') and self.web_server_process:
+                try:
+                    self.web_server_process.terminate()
+                    self.web_server_process.wait(timeout=1)
+                except:
+                    try:
+                        self.web_server_process.kill()
+                    except:
+                        pass
+            
+            # Force quit the application
+            from PyQt6.QtWidgets import QApplication
+            QApplication.instance().quit()
+            
+            # If that doesn't work, use os._exit as last resort
+            import os
+            import threading
+            def delayed_exit():
+                import time
+                time.sleep(2)
+                os._exit(0)
+            
+            threading.Thread(target=delayed_exit, daemon=True).start()
+            
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to start watchdog: {str(e)}")
+            logger.error(f"Error during force shutdown: {e}")
+            # Last resort - immediate exit
+            import os
+            os._exit(0)
+    
+    def start_watchdog(self):
+        """Start watchdog service and close app for automatic restart"""
+        reply = QMessageBox.question(
+            self, "Start Watchdog Service", 
+            "This will start the 24/7 monitoring service.\n\n"
+            "The app will close and automatically reopen within 60 seconds.\n\n"
+            "Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            try:
+                # Start the watchdog service first
+                result = subprocess.run(['sudo', 'systemctl', 'start', 'bird-detection-watchdog.service'], 
+                                      capture_output=True, text=True)
+                if result.returncode == 0:
+                    # Show notification and close app
+                    QMessageBox.information(
+                        self, "Watchdog Started", 
+                        "Watchdog service started successfully!\n\n"
+                        "This app will now close and automatically reopen within 60 seconds.\n\n"
+                        "Please wait..."
+                    )
+                    # Force shutdown for watchdog restart
+                    self.force_shutdown_for_watchdog()
+                else:
+                    QMessageBox.critical(self, "Error", f"Failed to start service:\n{result.stderr}")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to start watchdog: {str(e)}")
     
     def stop_watchdog(self):
         """Stop watchdog service"""
@@ -2331,6 +2474,30 @@ class MainWindow(QMainWindow):
     def start_web_server(self):
         """Start the mobile web server"""
         try:
+            # Kill any existing web server processes first
+            try:
+                import psutil
+                for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                    try:
+                        if proc.info['name'] == 'python3' and proc.info['cmdline']:
+                            # Check if it's running our web server
+                            cmdline = ' '.join(proc.info['cmdline'])
+                            if 'web_interface/server.py' in cmdline:
+                                logger.info(f"Killing existing web server process {proc.info['pid']}")
+                                proc.terminate()
+                                proc.wait(timeout=3)
+                    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.TimeoutExpired):
+                        pass
+            except ImportError:
+                # psutil not available, try alternative method
+                try:
+                    subprocess.run(['pkill', '-f', 'web_interface/server.py'], check=False)
+                except:
+                    pass
+            
+            # Wait a moment for processes to die
+            time.sleep(1)
+            
             # Start web server in background
             web_server_path = Path(__file__).parent / "web_interface" / "server.py"
             
@@ -2344,17 +2511,53 @@ class MainWindow(QMainWindow):
                 [sys.executable, str(web_server_path)],
                 cwd=str(web_server_path.parent),
                 stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+                universal_newlines=True
             )
             
-            # Give it a moment to start
-            time.sleep(1)
+            # Read output to get the actual port
+            server_port = 8080  # default
+            start_time = time.time()
+            while time.time() - start_time < 5:  # Wait up to 5 seconds
+                if self.web_server_process.poll() is not None:
+                    # Process exited
+                    stdout, stderr = self.web_server_process.communicate()
+                    error_msg = stderr.strip()
+                    logger.error(f"Web server failed to start: {error_msg}")
+                    
+                    # Set failure message in Services tab
+                    if hasattr(self, 'services_tab'):
+                        self.services_tab.set_mobile_url(None)
+                    
+                    self.mobile_url = None
+                    return
+                
+                # Try to read stdout for port info
+                try:
+                    import select
+                    if select.select([self.web_server_process.stdout], [], [], 0.1)[0]:
+                        line = self.web_server_process.stdout.readline()
+                        if line and "Starting server on port" in line:
+                            # Extract port number
+                            import re
+                            match = re.search(r'port (\d+)', line)
+                            if match:
+                                server_port = int(match.group(1))
+                                logger.info(f"Web server using port {server_port}")
+                                break
+                except:
+                    pass
+                
+                time.sleep(0.1)
             
-            # Check if process started successfully
+            # Check if process is still running
             if self.web_server_process.poll() is not None:
-                # Process already exited - get error
                 stdout, stderr = self.web_server_process.communicate()
-                logger.error(f"Web server failed to start: {stderr.decode()}")
+                logger.error(f"Web server failed: {stderr}")
+                if hasattr(self, 'services_tab'):
+                    self.services_tab.set_mobile_url(None)
                 self.mobile_url = None
                 return
             
@@ -2372,7 +2575,7 @@ class MainWindow(QMainWindow):
             except:
                 pass
             
-            self.mobile_url = f"http://{local_ip}:8080"
+            self.mobile_url = f"http://{local_ip}:{server_port}"
             logger.info(f"Mobile web server started at {self.mobile_url}")
             
             # Update Services tab with URL

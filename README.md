@@ -21,7 +21,7 @@ cd Bird_Bath_Photography
 python3 main.py
 ```
 
-That's it! The app creates all config files automatically.
+The app automatically creates `config.json` from the template on first run.
 
 ## Setup
 
