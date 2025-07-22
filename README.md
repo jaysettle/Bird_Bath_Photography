@@ -33,10 +33,10 @@ That's it! The app creates all config files automatically.
    - OpenAI API key (for bird identification)
    - Email settings (for reports)  
    - Google Drive (for cloud backup)
-4. **Position camera** 6-8 feet from your bird bath
+4. **Position camera** 4-8 feet from your bird bath
 5. **View species** on mobile at `http://your-pi-ip:5000`
 
-No JSON editing required - everything is configured through the GUI!
+No JSON editing required - everything is configured through the GUI.
 
 ## 📋 Requirements
 
@@ -58,9 +58,7 @@ No JSON editing required - everything is configured through the GUI!
 
 ## 📱 Mobile Interface
 
-Access your bird monitoring system from anywhere:
-- Real-time camera preview
-- Species photo galleries  
+Access your bird monitoring system from your home: 
 - Detection statistics
 - System status
 
