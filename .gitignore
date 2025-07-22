@@ -94,4 +94,4 @@ OLD_BACKUP_*/
 # Documentation build
 docs/_build/
 docs/_static/
-docs/_templates/
+docs/_templates/config.json
