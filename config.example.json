@@ -89,5 +89,10 @@
         "api_key": "your-openai-api-key-here",
         "enabled": false,
         "max_images_per_hour": 10
+    },
+    "prefilter": {
+        "enabled": true,
+        "confidence_threshold": 0.7,
+        "note": "Local MobileNet pre-filtering to reduce OpenAI API calls. Place bird_detector.tflite in models/ directory"
     }
 }

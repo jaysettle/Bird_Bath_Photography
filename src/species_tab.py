@@ -35,7 +35,7 @@ class ThumbnailLoader(QThread):
                 if not pixmap.isNull():
                     logger.debug(f"ThumbnailLoader: Pixmap loaded successfully, scaling")
                     # Pre-scale to thumbnail size to reduce memory usage
-                    scaled = pixmap.scaled(100, 100, Qt.AspectRatioMode.KeepAspectRatio,
+                    scaled = pixmap.scaled(100, 75, Qt.AspectRatioMode.KeepAspectRatio,
                                          Qt.TransformationMode.SmoothTransformation)
                     logger.debug(f"ThumbnailLoader: Emitting thumbnail_loaded signal")
                     self.thumbnail_loaded.emit(self.image_path, scaled)
@@ -179,19 +179,32 @@ class SpeciesTab(QWidget):
             row, col = 0, 0
             for i, photo_path in enumerate(photo_gallery[-9:]):  # Show last 9 photos
                 thumb_label = ClickableLabel()
-                thumb_label.setFixedSize(100, 100)
+                thumb_label.setFixedSize(100, 75)  # 4:3 aspect ratio
                 thumb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 thumb_label.setStyleSheet("background-color: #333; color: gray; border: 1px solid #555;")
-                thumb_label.setText("Loading...")
+                
+                # Load thumbnail synchronously for immediate display
+                if os.path.exists(photo_path):
+                    try:
+                        pixmap = QPixmap(photo_path)
+                        if not pixmap.isNull():
+                            scaled = pixmap.scaled(100, 75, Qt.AspectRatioMode.KeepAspectRatio,
+                                                 Qt.TransformationMode.SmoothTransformation)
+                            thumb_label.setPixmap(scaled)
+                        else:
+                            thumb_label.setText("Failed")
+                            thumb_label.setStyleSheet("background-color: #444; color: #ff6666; border: 1px solid #777;")
+                    except Exception as e:
+                        logger.error(f"Error loading thumbnail: {e}")
+                        thumb_label.setText("Error")
+                        thumb_label.setStyleSheet("background-color: #444; color: #ff6666; border: 1px solid #777;")
+                else:
+                    thumb_label.setText("Missing")
+                    thumb_label.setStyleSheet("background-color: #444; color: #ffaa00; border: 1px solid #777;")
+                    logger.warning(f"Thumbnail image does not exist: {photo_path}")
                 
                 # Connect click to show full image
                 thumb_label.clicked.connect(lambda p=photo_path: self.show_full_image(p))
-                
-                # Store label mapping for async loading
-                self.label_mappings[f"{photo_path}_{i}"] = thumb_label
-                
-                # Start async thumbnail loading
-                self.load_thumbnail_async_with_key(f"{photo_path}_{i}", photo_path)
                 
                 gallery_layout.addWidget(thumb_label, row, col)
                 
@@ -206,7 +219,7 @@ class SpeciesTab(QWidget):
             
             for _ in range(remaining_slots):
                 empty_label = QLabel()
-                empty_label.setFixedSize(100, 100)
+                empty_label.setFixedSize(100, 75)  # 4:3 aspect ratio
                 empty_label.setStyleSheet("background-color: #222; border: 1px dashed #444;")
                 gallery_layout.addWidget(empty_label, row, col)
                 col += 1

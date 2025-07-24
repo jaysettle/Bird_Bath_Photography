@@ -29,6 +29,10 @@ class AIBirdIdentifier:
         else:
             self.enabled = True
             
+        # Rate limiting: 2 minutes between API calls
+        self.min_time_between_calls = 120  # seconds
+        self.last_api_call_time = 0
+        
         # Create species database file if it doesn't exist
         self.db_path = Path(__file__).parent.parent / "species_database.json"
         if not self.db_path.exists():
@@ -89,6 +93,21 @@ class AIBirdIdentifier:
         if not self.enabled:
             logger.warning("AI Bird Identifier is disabled - no API key found")
             return None
+        
+        # Check rate limiting
+        import time
+        current_time = time.time()
+        time_since_last_call = current_time - self.last_api_call_time
+        
+        if time_since_last_call < self.min_time_between_calls:
+            wait_time = self.min_time_between_calls - time_since_last_call
+            logger.info(f"Rate limit active: Skipping API call. Next call allowed in {wait_time:.0f} seconds")
+            return {
+                "identified": False,
+                "rate_limited": True,
+                "wait_time": wait_time,
+                "reason": f"Rate limit: Please wait {wait_time:.0f} seconds before next identification"
+            }
             
         # Encode image
         logger.debug("Encoding image to base64...")
@@ -147,6 +166,9 @@ class AIBirdIdentifier:
                 json=payload,
                 timeout=30
             )
+            
+            # Update last API call time immediately after making the request
+            self.last_api_call_time = time.time()
             
             logger.debug(f"OpenAI API response status: {response.status_code}")
             

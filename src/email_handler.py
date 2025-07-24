@@ -476,6 +476,43 @@ class EmailHandler:
         """Get current email queue size"""
         return self.email_queue.qsize()
     
+    def send_email_with_attachments(self, recipient, subject, body, attachment_paths):
+        """Send email with multiple image attachments"""
+        try:
+            if not self.email_password:
+                logger.error("Email password not configured")
+                return False
+                
+            msg = MIMEMultipart()
+            msg['Subject'] = subject
+            msg['From'] = self.sender_email
+            msg['To'] = recipient
+            
+            # Add text body
+            msg.attach(MIMEText(body, 'plain'))
+            
+            # Add attachments
+            for path in attachment_paths:
+                path_str = str(path)  # Convert Path object to string
+                if os.path.exists(path_str):
+                    with open(path_str, 'rb') as f:
+                        img = MIMEImage(f.read())
+                        img.add_header('Content-Disposition', 'attachment', 
+                                     filename=os.path.basename(path_str))
+                        msg.attach(img)
+                        
+            # Send email
+            with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
+                server.login(self.sender_email, self.email_password)
+                server.send_message(msg)
+                
+            logger.info(f"Sent email with {len(attachment_paths)} attachments")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to send email with attachments: {e}")
+            return False
+    
     def clear_queue(self):
         """Clear email queue"""
         try:

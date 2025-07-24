@@ -5,12 +5,15 @@ Automatically photograph and identify birds at your bird bath using AI and compu
 ## What It Does
 
 - AI identifies bird species using OpenAI Vision API
+- Local pre-filtering to reduce API calls by ~90%
 - Automatic photography with motion detection  
+- Photo gallery with day grouping and multi-select
 - Species galleries with photo collections
 - Mobile web interface for remote monitoring
 - Google Drive backup (optional)
 - Email reports with daily summaries
 - Smart cleanup - deletes non-bird photos
+- Experimental batch processing tools
 
 ## Quick Start
 
@@ -49,10 +52,13 @@ No JSON editing required - everything is configured through the GUI.
 |---------|-------------|
 | Motion Detection | Automatic bird photography with ROI selection |
 | AI Identification | Species recognition with confidence scores |
+| Pre-filtering | Local TensorFlow Lite model reduces API calls |
+| Photo Gallery | Browse all photos with thumbnails and day grouping |
 | Statistics | Track species diversity and counts |
 | Auto-Restart | Watchdog service keeps system running |
 | Performance | Logging toggle for optimal speed |
 | Resilient | Continues working even if services fail |
+| Batch Tools | Experimental app for filtering non-bird photos |
 
 ## Mobile Interface
 

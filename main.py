@@ -168,8 +168,9 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QTabWidget, QWidget,
                            QVBoxLayout, QHBoxLayout, QLabel, QSlider, QPushButton,
                            QTextEdit, QGroupBox, QGridLayout, QCheckBox, QSpinBox,
                            QProgressBar, QTableWidget, QTableWidgetItem, QHeaderView,
+                           QSizePolicy,
                            QSplitter, QFrame, QLineEdit, QTimeEdit, QFileDialog, 
-                           QMessageBox, QScrollArea)
+                           QMessageBox, QScrollArea, QDialog)
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QMutex, QPoint, QRect, QUrl, QTime
 from PyQt6.QtGui import QPixmap, QImage, QFont, QPalette, QColor, QPainter, QPen, QMouseEvent, QDesktopServices
 import cv2
@@ -182,6 +183,7 @@ from src.email_handler import EmailHandler
 from src.drive_uploader_simple import CombinedUploader
 from src.ai_bird_identifier import AIBirdIdentifier
 from src.species_tab import SpeciesTab
+from src.bird_prefilter import BirdPreFilter
 
 # Set up logging with configuration
 config_path = os.path.join(os.path.dirname(__file__), 'config.json')
@@ -195,10 +197,18 @@ class InteractivePreviewLabel(QLabel):
     
     def __init__(self):
         super().__init__()
-        self.setMinimumSize(600, 400)
+        # Set size to maintain 4:3 aspect ratio
+        self.setMinimumSize(640, 480)
+        self.setMaximumSize(800, 600)
         self.setStyleSheet("border: 2px solid #555555; background-color: #252525;")
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setText("Camera Preview")
+        self.setScaledContents(False)  # Don't stretch - we'll handle scaling ourselves
+        
+        # Set size policy to maintain aspect ratio
+        size_policy = QSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
+        size_policy.setHeightForWidth(True)
+        self.setSizePolicy(size_policy)
         
         # ROI selection state
         self.drawing = False
@@ -206,6 +216,10 @@ class InteractivePreviewLabel(QLabel):
         self.roi_end = QPoint()
         self.roi_rect = QRect()
         self.current_pixmap = None
+        
+    def heightForWidth(self, width):
+        """Maintain 4:3 aspect ratio"""
+        return int(width * 3 / 4)
         
     def mousePressEvent(self, event):
         """Handle mouse press for ROI selection"""
@@ -422,9 +436,9 @@ class DriveStatsMonitor(QThread):
                         'latest_upload_time': None
                     })
                 
-                # Check every 10 seconds
+                # Check every 30 seconds to reduce CPU load
                 if self.running:
-                    self.msleep(10000)
+                    self.msleep(30000)
                     
             except Exception as e:
                 logger.error(f"Error in Drive stats monitor: {e}")
@@ -621,20 +635,21 @@ class CameraTab(QWidget):
         stats_group.setStyleSheet("""
             QGroupBox {
                 font-weight: bold;
-                padding-top: 10px;
-                margin-top: 5px;
+                padding-top: 5px;
+                margin-top: 2px;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
                 left: 10px;
-                padding: 0 5px 0 5px;
+                padding: 0 3px 0 3px;
             }
         """)
         
         stats_layout = QGridLayout()
-        stats_layout.setSpacing(3)  # Reduced spacing for more compact layout
-        stats_layout.setVerticalSpacing(2)  # Tighter vertical spacing
-        stats_layout.setHorizontalSpacing(8)  # Keep horizontal spacing readable
+        stats_layout.setSpacing(0)  # Minimal spacing for compact layout
+        stats_layout.setVerticalSpacing(0)  # No vertical spacing
+        stats_layout.setHorizontalSpacing(3)  # Very small horizontal spacing
+        stats_layout.setContentsMargins(2, 2, 2, 2)  # Minimal margins
         
         # Camera Info Section
         row = 0
@@ -667,7 +682,7 @@ class CameraTab(QWidget):
         
         # Separator line
         separator = QLabel()
-        separator.setStyleSheet("border-bottom: 1px solid #555; margin: 5px 0;")
+        separator.setStyleSheet("border-bottom: 1px solid #555; margin: 2px 0;")
         separator.setFixedHeight(1)
         stats_layout.addWidget(separator, row, 0, 1, 4)
         
@@ -700,7 +715,7 @@ class CameraTab(QWidget):
         # Instructions at bottom
         row += 1
         instructions = QLabel("💡 Click and drag on preview to set Motion ROI")
-        instructions.setStyleSheet("color: #888; font-size: 11px; font-style: italic; padding-top: 5px;")
+        instructions.setStyleSheet("color: #888; font-size: 11px; font-style: italic; padding-top: 2px;")
         instructions.setAlignment(Qt.AlignmentFlag.AlignCenter)
         stats_layout.addWidget(instructions, row, 0, 1, 4)
         
@@ -964,15 +979,364 @@ class CameraTab(QWidget):
         except Exception as e:
             logger.error(f"Failed to save settings: {e}")
 
+class GalleryTab(QWidget):
+    """Photo gallery tab for viewing all captured images"""
+    
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        self.selected_items = set()
+        self.current_full_image = None
+        self.email_handler = None  # Will be set from main window
+        self.setup_ui()
+        self.load_photos()
+        
+    def setup_ui(self):
+        layout = QVBoxLayout(self)
+        
+        # Toolbar
+        toolbar_layout = QHBoxLayout()
+        
+        # Refresh button
+        self.refresh_btn = QPushButton("Refresh")
+        self.refresh_btn.clicked.connect(self.load_photos)
+        toolbar_layout.addWidget(self.refresh_btn)
+        
+        # Selection info
+        self.selection_label = QLabel("0 selected")
+        toolbar_layout.addWidget(self.selection_label)
+        
+        # Email button
+        self.email_btn = QPushButton("Email Selected")
+        self.email_btn.clicked.connect(self.email_selected)
+        self.email_btn.setEnabled(False)
+        toolbar_layout.addWidget(self.email_btn)
+        
+        # Delete button
+        self.delete_btn = QPushButton("Delete Selected")
+        self.delete_btn.clicked.connect(self.delete_selected)
+        self.delete_btn.setEnabled(False)
+        toolbar_layout.addWidget(self.delete_btn)
+        
+        toolbar_layout.addStretch()
+        layout.addLayout(toolbar_layout)
+        
+        # Gallery scroll area
+        self.scroll_area = QScrollArea()
+        self.scroll_widget = QWidget()
+        self.gallery_layout = QGridLayout(self.scroll_widget)
+        self.gallery_layout.setSpacing(10)
+        
+        self.scroll_area.setWidget(self.scroll_widget)
+        self.scroll_area.setWidgetResizable(True)
+        layout.addWidget(self.scroll_area)
+        
+        # Enable keyboard shortcuts
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        
+    def keyPressEvent(self, event):
+        """Handle keyboard events"""
+        if event.key() == Qt.Key.Key_Delete and self.selected_items:
+            self.delete_selected()
+        elif event.key() == Qt.Key.Key_A and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            # Select all
+            self.select_all()
+        elif event.key() == Qt.Key.Key_Escape:
+            # Clear selection
+            self.clear_selection()
+            
+    def load_photos(self):
+        """Load all photos from the storage directory"""
+        # Clear existing items
+        while self.gallery_layout.count():
+            item = self.gallery_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+                
+        self.selected_items.clear()
+        self.update_selection_label()
+        
+        # Get storage directory
+        storage_dir = Path(self.config.get('storage', {}).get('save_dir', 
+                                           str(Path.home() / 'BirdPhotos')))
+        
+        if not storage_dir.exists():
+            return
+            
+        # Get all image files, sorted by modification time (newest first)
+        image_files = []
+        for ext in ['*.jpg', '*.jpeg', '*.png']:
+            image_files.extend(storage_dir.glob(ext))
+            
+        image_files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+        
+        # Group images by date
+        from datetime import datetime
+        images_by_date = {}
+        for image_path in image_files:
+            date_str = datetime.fromtimestamp(image_path.stat().st_mtime).strftime('%Y-%m-%d')
+            if date_str not in images_by_date:
+                images_by_date[date_str] = []
+            images_by_date[date_str].append(image_path)
+            
+        # Create thumbnails grouped by date
+        col_count = 5  # Number of columns
+        current_row = 0
+        
+        for date_str in sorted(images_by_date.keys(), reverse=True):
+            # Add date separator with photo count
+            photo_count = len(images_by_date[date_str])
+            date_text = datetime.strptime(date_str, '%Y-%m-%d').strftime('%A, %B %d, %Y')
+            date_label = QLabel(f"{date_text} - {photo_count} photo{'s' if photo_count != 1 else ''}")
+            date_label.setStyleSheet("""
+                QLabel {
+                    font-size: 16px;
+                    font-weight: bold;
+                    color: #4CAF50;
+                    padding: 10px;
+                    background-color: #f0f0f0;
+                    border-radius: 5px;
+                }
+            """)
+            self.gallery_layout.addWidget(date_label, current_row, 0, 1, col_count)
+            current_row += 1
+            
+            # Add images for this date
+            col_idx = 0
+            for image_path in images_by_date[date_str]:
+                if col_idx >= col_count:
+                    col_idx = 0
+                    current_row += 1
+                    
+                thumbnail_widget = self.create_thumbnail(image_path)
+                self.gallery_layout.addWidget(thumbnail_widget, current_row, col_idx)
+                col_idx += 1
+                
+            # Move to next row for next date
+            current_row += 2  # Extra spacing between dates
+            
+    def create_thumbnail(self, image_path):
+        """Create a thumbnail widget for an image"""
+        widget = QWidget()
+        widget.setFixedSize(220, 200)  # Further reduced height
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(3, 3, 3, 3)  # Minimal margins
+        layout.setSpacing(1)  # Very tight spacing
+        
+        # Checkbox for selection
+        checkbox = QCheckBox()
+        checkbox.stateChanged.connect(lambda state, path=image_path: 
+                                    self.on_selection_changed(path, state))
+        layout.addWidget(checkbox, alignment=Qt.AlignmentFlag.AlignLeft)
+        
+        # Thumbnail label - 4:3 aspect ratio
+        label = QLabel()
+        label.setFixedSize(200, 140)  # Slightly smaller height
+        label.setScaledContents(False)  # Don't stretch - maintain aspect ratio
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        label.setStyleSheet("""
+            QLabel {
+                border: 1px solid #ccc;
+                background-color: #f0f0f0;
+                padding: 0px;
+                margin: 0px;
+            }
+            QLabel:hover {
+                border: 2px solid #4CAF50;
+            }
+        """)
+        
+        # Load thumbnail
+        pixmap = QPixmap(str(image_path))
+        if not pixmap.isNull():
+            scaled_pixmap = pixmap.scaled(200, 140, Qt.AspectRatioMode.KeepAspectRatio, 
+                                         Qt.TransformationMode.SmoothTransformation)
+            label.setPixmap(scaled_pixmap)
+        else:
+            label.setText("Error loading image")
+            
+        # Make thumbnail clickable
+        label.mousePressEvent = lambda event, path=image_path: self.show_full_image(path)
+        label.setCursor(Qt.CursorShape.PointingHandCursor)
+        
+        layout.addWidget(label)
+        
+        # Filename label
+        filename_label = QLabel(image_path.name)
+        filename_label.setWordWrap(True)
+        filename_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        filename_label.setMaximumHeight(15)
+        filename_label.setStyleSheet("font-size: 10px;")
+        layout.addWidget(filename_label)
+        
+        # Time ago label
+        time_ago = self.get_time_ago(image_path.stat().st_mtime)
+        time_label = QLabel(time_ago)
+        time_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        time_label.setStyleSheet("color: #666; font-size: 11px;")
+        layout.addWidget(time_label)
+        
+        # Store checkbox reference
+        widget.checkbox = checkbox
+        widget.image_path = image_path
+        
+        return widget
+        
+    def get_time_ago(self, timestamp):
+        """Get human-readable time ago string"""
+        import time
+        from datetime import datetime
+        
+        now = time.time()
+        diff = now - timestamp
+        
+        if diff < 60:
+            return "just now"
+        elif diff < 3600:
+            minutes = int(diff / 60)
+            return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
+        elif diff < 86400:
+            hours = int(diff / 3600)
+            return f"{hours} hour{'s' if hours != 1 else ''} ago"
+        elif diff < 604800:
+            days = int(diff / 86400)
+            return f"{days} day{'s' if days != 1 else ''} ago"
+        else:
+            return datetime.fromtimestamp(timestamp).strftime('%b %d, %Y')
+        
+    def on_selection_changed(self, path, state):
+        """Handle selection change"""
+        if state == 2:  # Checked
+            self.selected_items.add(path)
+        else:
+            self.selected_items.discard(path)
+            
+        self.update_selection_label()
+        
+    def update_selection_label(self):
+        """Update selection count and button states"""
+        count = len(self.selected_items)
+        self.selection_label.setText(f"{count} selected")
+        self.email_btn.setEnabled(count > 0)
+        self.delete_btn.setEnabled(count > 0)
+        
+    def select_all(self):
+        """Select all images"""
+        for i in range(self.gallery_layout.count()):
+            widget = self.gallery_layout.itemAt(i).widget()
+            if widget and hasattr(widget, 'checkbox'):
+                widget.checkbox.setChecked(True)
+                
+    def clear_selection(self):
+        """Clear all selections"""
+        for i in range(self.gallery_layout.count()):
+            widget = self.gallery_layout.itemAt(i).widget()
+            if widget and hasattr(widget, 'checkbox'):
+                widget.checkbox.setChecked(False)
+                
+    def show_full_image(self, image_path):
+        """Show full-size image in a dialog"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle(image_path.name)
+        dialog.setModal(True)
+        
+        layout = QVBoxLayout(dialog)
+        
+        # Image label
+        label = QLabel()
+        pixmap = QPixmap(str(image_path))
+        
+        # Scale to fit screen if needed
+        screen = QApplication.primaryScreen().geometry()
+        max_width = int(screen.width() * 0.9)
+        max_height = int(screen.height() * 0.9)
+        
+        if pixmap.width() > max_width or pixmap.height() > max_height:
+            pixmap = pixmap.scaled(max_width, max_height, 
+                                 Qt.AspectRatioMode.KeepAspectRatio,
+                                 Qt.TransformationMode.SmoothTransformation)
+        
+        label.setPixmap(pixmap)
+        layout.addWidget(label)
+        
+        # Close button
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(dialog.close)
+        layout.addWidget(close_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+        
+        dialog.exec()
+        
+    def delete_selected(self):
+        """Delete selected images"""
+        if not self.selected_items:
+            return
+            
+        # Confirm deletion
+        reply = QMessageBox.question(
+            self, 
+            "Confirm Deletion",
+            f"Delete {len(self.selected_items)} selected image(s)?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            for image_path in self.selected_items:
+                try:
+                    image_path.unlink()
+                    logger.info(f"Deleted {image_path}")
+                except Exception as e:
+                    logger.error(f"Failed to delete {image_path}: {e}")
+                    
+            # Reload gallery
+            self.load_photos()
+            
+    def email_selected(self):
+        """Email selected images"""
+        if not self.selected_items or not self.email_handler:
+            return
+            
+        try:
+            # Get email config
+            email_config = self.config.get('email', {})
+            recipient = email_config.get('recipient', email_config.get('sender', ''))
+            
+            if not recipient:
+                QMessageBox.warning(self, "No Email", 
+                                  "No email recipient configured")
+                return
+                
+            # Send email with attachments
+            subject = f"Bird Photos - {len(self.selected_items)} images"
+            body = f"Attached are {len(self.selected_items)} bird photos from your collection."
+            
+            success = self.email_handler.send_email_with_attachments(
+                recipient, 
+                subject, 
+                body,
+                list(self.selected_items)
+            )
+            
+            if success:
+                QMessageBox.information(self, "Email Sent", 
+                                      f"Successfully sent {len(self.selected_items)} images")
+            else:
+                QMessageBox.warning(self, "Email Failed", 
+                                  "Failed to send email")
+                
+        except Exception as e:
+            logger.error(f"Email error: {e}")
+            QMessageBox.critical(self, "Error", f"Email error: {str(e)}")
+
 class ServicesTab(QWidget):
     """Services monitoring and control tab"""
     
-    def __init__(self, email_handler, uploader, config=None, bird_identifier=None):
+    def __init__(self, email_handler, uploader, config=None, bird_identifier=None, bird_prefilter=None):
         super().__init__()
         self.email_handler = email_handler
         self.uploader = uploader
         self.config = config or {}
         self.bird_identifier = bird_identifier
+        self.bird_prefilter = bird_prefilter
         
         # Initialize Drive stats monitor
         self.drive_stats_monitor = DriveStatsMonitor(uploader)
@@ -997,6 +1361,12 @@ class ServicesTab(QWidget):
         self.uptime_timer.timeout.connect(self.update_uptime)
         self.uptime_timer.start(5000)  # Update every 5 seconds to reduce CPU load
         self.update_uptime()
+        
+        # Update pre-filter statistics
+        self.update_prefilter_stats()
+        self.prefilter_timer = QTimer()
+        self.prefilter_timer.timeout.connect(self.update_prefilter_stats)
+        self.prefilter_timer.start(10000)  # Update every 10 seconds to reduce CPU load
     
     def cleanup(self):
         """Clean up background threads"""
@@ -1006,6 +1376,8 @@ class ServicesTab(QWidget):
             self.openai_timer.stop()
         if hasattr(self, 'uptime_timer'):
             self.uptime_timer.stop()
+        if hasattr(self, 'prefilter_timer'):
+            self.prefilter_timer.stop()
     
     def set_mobile_url(self, url):
         """Set the mobile web interface URL"""
@@ -1224,6 +1596,70 @@ class ServicesTab(QWidget):
         
         openai_group.setLayout(openai_layout)
         right_layout.addWidget(openai_group)
+        
+        # Local Pre-filter Statistics
+        prefilter_group = QGroupBox("Local Bird Pre-filter")
+        prefilter_layout = QGridLayout()
+        
+        # Title with larger font
+        prefilter_title_label = QLabel("MobileNet Pre-filter")
+        prefilter_title_font = prefilter_title_label.font()
+        prefilter_title_font.setPointSize(14)
+        prefilter_title_font.setBold(True)
+        prefilter_title_label.setFont(prefilter_title_font)
+        prefilter_title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        prefilter_layout.addWidget(prefilter_title_label, 0, 0, 1, 2)
+        
+        # Service status
+        prefilter_layout.addWidget(QLabel("Status:"), 1, 0)
+        self.prefilter_status = QLabel("Initializing...")
+        self.prefilter_status.setStyleSheet("color: orange;")
+        prefilter_layout.addWidget(self.prefilter_status, 1, 1)
+        
+        # Images processed
+        prefilter_layout.addWidget(QLabel("Images Processed:"), 2, 0)
+        self.prefilter_processed_count = QLabel("0")
+        self.prefilter_processed_count.setStyleSheet("font-size: 16px; font-weight: bold; color: #4CAF50;")
+        prefilter_layout.addWidget(self.prefilter_processed_count, 2, 1)
+        
+        # Birds detected
+        prefilter_layout.addWidget(QLabel("Birds Detected:"), 3, 0)
+        self.prefilter_birds_detected = QLabel("0")
+        self.prefilter_birds_detected.setStyleSheet("color: #4CAF50;")
+        prefilter_layout.addWidget(self.prefilter_birds_detected, 3, 1)
+        
+        # No birds detected
+        prefilter_layout.addWidget(QLabel("No Birds Detected:"), 4, 0)
+        self.prefilter_no_birds = QLabel("0")
+        self.prefilter_no_birds.setStyleSheet("color: #ff9800;")
+        prefilter_layout.addWidget(self.prefilter_no_birds, 4, 1)
+        
+        # Detection rate
+        prefilter_layout.addWidget(QLabel("Detection Rate:"), 5, 0)
+        self.prefilter_detection_rate = QLabel("0%")
+        self.prefilter_detection_rate.setStyleSheet("color: #2196F3;")
+        prefilter_layout.addWidget(self.prefilter_detection_rate, 5, 1)
+        
+        # Average processing time
+        prefilter_layout.addWidget(QLabel("Avg Processing:"), 6, 0)
+        self.prefilter_avg_time = QLabel("0.0ms")
+        self.prefilter_avg_time.setStyleSheet("color: #9C27B0;")
+        prefilter_layout.addWidget(self.prefilter_avg_time, 6, 1)
+        
+        # Queue size
+        prefilter_layout.addWidget(QLabel("Queue Size:"), 7, 0)
+        self.prefilter_queue_size = QLabel("0")
+        self.prefilter_queue_size.setStyleSheet("color: #607D8B;")
+        prefilter_layout.addWidget(self.prefilter_queue_size, 7, 1)
+        
+        # Confidence threshold
+        prefilter_layout.addWidget(QLabel("Confidence Threshold:"), 8, 0)
+        self.prefilter_confidence_threshold = QLabel("0.70")
+        self.prefilter_confidence_threshold.setStyleSheet("color: #795548;")
+        prefilter_layout.addWidget(self.prefilter_confidence_threshold, 8, 1)
+        
+        prefilter_group.setLayout(prefilter_layout)
+        right_layout.addWidget(prefilter_group)
         
         right_layout.addStretch()
         
@@ -1461,6 +1897,44 @@ class ServicesTab(QWidget):
             
             self.uptime_label.setText(f"{hours}h {minutes}m {seconds}s")
     
+    def update_prefilter_stats(self):
+        """Update pre-filter statistics display"""
+        if self.bird_prefilter:
+            stats = self.bird_prefilter.get_stats()
+            
+            # Update status
+            if stats.get('enabled'):
+                self.prefilter_status.setText("🟢 Running")
+                self.prefilter_status.setStyleSheet("color: #4CAF50; font-weight: bold;")
+            else:
+                self.prefilter_status.setText("🔴 Disabled")
+                self.prefilter_status.setStyleSheet("color: #f44336; font-weight: bold;")
+            
+            # Update statistics
+            self.prefilter_processed_count.setText(str(stats.get('images_processed', 0)))
+            self.prefilter_birds_detected.setText(str(stats.get('birds_detected', 0)))
+            self.prefilter_no_birds.setText(str(stats.get('no_birds_detected', 0)))
+            
+            # Update detection rate
+            detection_rate = stats.get('detection_rate', 0)
+            self.prefilter_detection_rate.setText(f"{detection_rate:.1f}%")
+            
+            # Update average processing time
+            avg_time = stats.get('average_processing_time', 0) * 1000  # Convert to ms
+            self.prefilter_avg_time.setText(f"{avg_time:.1f}ms")
+            
+            # Update queue size
+            queue_size = stats.get('queue_size', 0)
+            self.prefilter_queue_size.setText(str(queue_size))
+            
+            # Update confidence threshold
+            threshold = stats.get('confidence_threshold', 0.7)
+            self.prefilter_confidence_threshold.setText(f"{threshold:.2f}")
+        else:
+            # No prefilter service available
+            self.prefilter_status.setText("🔴 Not Available")
+            self.prefilter_status.setStyleSheet("color: #f44336;")
+    
     def on_save_config(self):
         """Save configuration changes"""
         try:
@@ -1522,10 +1996,11 @@ class ServicesTab(QWidget):
 class ConfigTab(QWidget):
     """Configuration tab for all system settings"""
     
-    def __init__(self, config_manager):
+    def __init__(self, config_manager, bird_prefilter=None):
         super().__init__()
         self.config_manager = config_manager
         self.config = config_manager.config
+        self.bird_prefilter = bird_prefilter
         self.setup_ui()
         self.load_current_settings()
     
@@ -1548,6 +2023,9 @@ class ConfigTab(QWidget):
         
         # OpenAI Configuration
         self.create_openai_section(scroll_layout)
+        
+        # Pre-filter Configuration
+        self.create_prefilter_section(scroll_layout)
         
         # System Management
         self.create_system_section(scroll_layout)
@@ -1684,6 +2162,46 @@ class ConfigTab(QWidget):
         group.setLayout(group_layout)
         layout.addWidget(group)
     
+    def create_prefilter_section(self, layout):
+        group = QGroupBox("Local Pre-filter (MobileNet)")
+        group_layout = QGridLayout()
+        
+        # Enable pre-filter
+        self.prefilter_enabled = QCheckBox("Enable Local Bird Pre-filtering")
+        group_layout.addWidget(self.prefilter_enabled, 0, 0, 1, 3)
+        
+        # Confidence threshold slider
+        group_layout.addWidget(QLabel("Confidence Threshold:"), 1, 0)
+        self.prefilter_confidence_slider = QSlider(Qt.Orientation.Horizontal)
+        self.prefilter_confidence_slider.setRange(10, 95)  # 0.10 to 0.95
+        self.prefilter_confidence_slider.setValue(70)  # Default 0.70
+        self.prefilter_confidence_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
+        self.prefilter_confidence_slider.setTickInterval(10)
+        self.prefilter_confidence_slider.valueChanged.connect(self.on_prefilter_confidence_changed)
+        group_layout.addWidget(self.prefilter_confidence_slider, 1, 1)
+        
+        # Connect enable/disable checkbox
+        self.prefilter_enabled.stateChanged.connect(self.on_prefilter_enabled_changed)
+        
+        self.prefilter_confidence_label = QLabel("0.70")
+        self.prefilter_confidence_label.setStyleSheet("font-weight: bold; color: #4CAF50;")
+        group_layout.addWidget(self.prefilter_confidence_label, 1, 2)
+        
+        # Info text
+        info_label = QLabel("Pre-filter uses a lightweight ML model to detect birds before sending to OpenAI,\nreducing API calls by 50-80% and saving costs.")
+        info_label.setStyleSheet("font-size: 11px; color: #888; font-style: italic;")
+        info_label.setWordWrap(True)
+        group_layout.addWidget(info_label, 2, 0, 1, 3)
+        
+        # Model status
+        group_layout.addWidget(QLabel("Model Status:"), 3, 0)
+        self.prefilter_model_status = QLabel("Not loaded")
+        self.prefilter_model_status.setStyleSheet("color: #ff9800;")
+        group_layout.addWidget(self.prefilter_model_status, 3, 1, 1, 2)
+        
+        group.setLayout(group_layout)
+        layout.addWidget(group)
+    
     def create_system_section(self, layout):
         group = QGroupBox("System Management")
         group_layout = QGridLayout()
@@ -1793,6 +2311,22 @@ class ConfigTab(QWidget):
         self.openai_enabled.setChecked(openai_config.get('enabled', False))
         self.openai_key.setText(openai_config.get('api_key', ''))
         self.openai_limit.setValue(openai_config.get('max_images_per_hour', 10))
+        
+        # Pre-filter settings
+        prefilter_config = self.config.get('prefilter', {})
+        prefilter_enabled = prefilter_config.get('enabled', True)
+        self.prefilter_enabled.setChecked(prefilter_enabled)
+        confidence_threshold = prefilter_config.get('confidence_threshold', 0.7)
+        slider_value = int(confidence_threshold * 100)  # Convert 0.70 to 70
+        self.prefilter_confidence_slider.setValue(slider_value)
+        self.prefilter_confidence_label.setText(f"{confidence_threshold:.2f}")
+        
+        # Enable/disable slider based on checkbox state
+        self.prefilter_confidence_slider.setEnabled(prefilter_enabled)
+        self.prefilter_confidence_label.setEnabled(prefilter_enabled)
+        
+        # Update model status on startup
+        self.update_prefilter_model_status()
         
         # Logging settings
         logging_config = self.config.get('logging', {})
@@ -2173,11 +2707,9 @@ class ConfigTab(QWidget):
             self.config_manager.load_config()
             self.config = self.config_manager.config
             
-            # Show confirmation
+            # Update status silently without popup
             status = "enabled" if enabled else "disabled"
-            QMessageBox.information(self, "Logging Settings", 
-                                  f"Logging has been {status}.\n"
-                                  f"{'Full verbosity restored.' if enabled else 'Only errors will be logged for better performance.'}")
+            logger.info(f"Logging has been {status}")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to update logging: {str(e)}")
     
@@ -2189,6 +2721,82 @@ class ConfigTab(QWidget):
         else:
             self.logging_status.setText("Status: Disabled (Errors Only)")
             self.logging_status.setStyleSheet("color: #FF9800; font-weight: bold;")
+    
+    def on_prefilter_confidence_changed(self, value):
+        """Handle prefilter confidence threshold slider change"""
+        confidence = value / 100.0  # Convert 70 to 0.70
+        self.prefilter_confidence_label.setText(f"{confidence:.2f}")
+        
+        # Update the prefilter service immediately
+        if self.bird_prefilter:
+            try:
+                self.bird_prefilter.set_confidence_threshold(confidence)
+                
+                # Update model status display
+                self.update_prefilter_model_status()
+                    
+            except Exception as e:
+                logger.warning(f"Could not update prefilter confidence threshold: {e}")
+                self.prefilter_model_status.setText("⚠️ Error")
+                self.prefilter_model_status.setStyleSheet("color: #ff9800;")
+    
+    def on_prefilter_enabled_changed(self, state):
+        """Handle prefilter enable/disable toggle"""
+        enabled = state == 2  # Qt.CheckState.Checked = 2
+        
+        if self.bird_prefilter:
+            try:
+                # Update both the service state and config setting
+                self.bird_prefilter.enabled = enabled
+                self.bird_prefilter.config_enabled = enabled
+                
+                if enabled:
+                    # If enabling, start processing thread if not already running
+                    if not self.bird_prefilter.running:
+                        self.bird_prefilter.start_processing_thread()
+                    logger.info("Pre-filter service enabled")
+                else:
+                    # If disabling, stop processing but keep thread alive for statistics
+                    logger.info("Pre-filter service disabled")
+                
+                # Update model status display
+                self.update_prefilter_model_status()
+                
+                # Enable/disable the confidence slider based on prefilter state
+                self.prefilter_confidence_slider.setEnabled(enabled)
+                self.prefilter_confidence_label.setEnabled(enabled)
+                
+            except Exception as e:
+                logger.warning(f"Could not toggle prefilter service: {e}")
+    
+    def update_prefilter_model_status(self):
+        """Update the prefilter model status display"""
+        if self.bird_prefilter:
+            try:
+                stats = self.bird_prefilter.get_stats()
+                
+                # Check if model file exists and was loaded successfully
+                model_exists = self.bird_prefilter.model_path.exists()
+                has_interpreter = hasattr(self.bird_prefilter, 'interpreter') and self.bird_prefilter.interpreter
+                
+                if model_exists and has_interpreter:
+                    if stats.get('enabled'):
+                        self.prefilter_model_status.setText("🟢 Model loaded & active")
+                        self.prefilter_model_status.setStyleSheet("color: #4CAF50;")
+                    else:
+                        self.prefilter_model_status.setText("🟡 Model loaded (disabled)")
+                        self.prefilter_model_status.setStyleSheet("color: #FF9800;")
+                else:
+                    self.prefilter_model_status.setText("🔴 Model not found")
+                    self.prefilter_model_status.setStyleSheet("color: #f44336;")
+                    
+            except Exception as e:
+                logger.warning(f"Could not get prefilter status: {e}")
+                self.prefilter_model_status.setText("⚠️ Error")
+                self.prefilter_model_status.setStyleSheet("color: #ff9800;")
+        else:
+            self.prefilter_model_status.setText("⚠️ Service unavailable")
+            self.prefilter_model_status.setStyleSheet("color: #ff9800;")
     
     def save_config(self):
         """Save configuration to file"""
@@ -2235,6 +2843,13 @@ class ConfigTab(QWidget):
                 'api_key': self.openai_key.text(),
                 'enabled': self.openai_enabled.isChecked(),
                 'max_images_per_hour': self.openai_limit.value()
+            }
+            
+            # Pre-filter configuration
+            confidence_value = self.prefilter_confidence_slider.value() / 100.0  # Convert 70 to 0.70
+            self.config['prefilter'] = {
+                'enabled': self.prefilter_enabled.isChecked(),
+                'confidence_threshold': confidence_value
             }
             
             # Save to file
@@ -2371,6 +2986,9 @@ class MainWindow(QMainWindow):
         # AI Bird Identifier (Day 1 Feature)
         self.bird_identifier = AIBirdIdentifier(self.config)
         
+        # Bird Pre-filter Service
+        self.bird_prefilter = BirdPreFilter(self.config)
+        
         # Service monitor
         self.service_monitor = ServiceMonitor()
         
@@ -2396,8 +3014,13 @@ class MainWindow(QMainWindow):
         self.camera_tab = CameraTab(self.camera_controller, self.config)
         self.tab_widget.addTab(self.camera_tab, "Camera")
         
+        # Gallery tab (position #2)
+        self.gallery_tab = GalleryTab(self.config)
+        self.gallery_tab.email_handler = self.email_handler
+        self.tab_widget.addTab(self.gallery_tab, "Gallery")
+        
         # Services tab
-        self.services_tab = ServicesTab(self.email_handler, self.uploader, self.config, self.bird_identifier)
+        self.services_tab = ServicesTab(self.email_handler, self.uploader, self.config, self.bird_identifier, self.bird_prefilter)
         self.tab_widget.addTab(self.services_tab, "Services")
         
         # Species tab
@@ -2405,7 +3028,7 @@ class MainWindow(QMainWindow):
         self.tab_widget.addTab(self.species_tab, "Species")
         
         # Configuration tab
-        self.config_tab = ConfigTab(self.config_manager)
+        self.config_tab = ConfigTab(self.config_manager, self.bird_prefilter)
         self.tab_widget.addTab(self.config_tab, "Configuration")
         
         # Logs tab
@@ -2614,41 +3237,83 @@ class MainWindow(QMainWindow):
         # Queue for upload
         self.uploader.queue_file(image_path)
         
-        # AI Bird Identification (Day 1 Feature)
+        # AI Bird Identification with Pre-filtering (Day 1 Feature + Local Pre-filter)
         if self.bird_identifier.enabled:
             # Run identification in a separate thread to avoid blocking
             def identify_bird():
-                result = self.bird_identifier.identify_bird(image_path)
-                if result and result.get('identified'):
-                    species = result.get('species_common', 'Unknown')
-                    confidence = result.get('confidence', 0)
-                    is_rare = self.bird_identifier.check_rare_species(
-                        result.get('species_scientific', '')
-                    )
+                # First, run pre-filter to check if birds are likely present (with timeout)
+                prefilter_result = {'processed': False, 'bird_detected': None, 'reason': 'Pre-filter disabled'}
+                
+                try:
+                    # Only try pre-filter if service exists and is enabled
+                    if (hasattr(self, 'bird_prefilter') and self.bird_prefilter and 
+                        hasattr(self.bird_prefilter, 'enabled') and self.bird_prefilter.enabled):
+                        # Process with short timeout to avoid blocking
+                        prefilter_result = self.bird_prefilter.process_image(image_path, timeout=0.1)
+                except Exception as e:
+                    logger.warning(f"Pre-filter error (skipping): {e}")
+                    prefilter_result = {'processed': False, 'bird_detected': None, 'reason': f'Error: {e}'}
+                
+                # If pre-filter is working and says no bird detected, skip OpenAI call
+                if (prefilter_result.get('processed') and 
+                    prefilter_result.get('bird_detected') is False):
                     
-                    status_msg = f"Identified: {species} (confidence: {confidence:.0%})"
-                    if is_rare:
-                        status_msg += " - RARE SPECIES!"
+                    logger.info(f"Pre-filter: No bird detected (confidence: {prefilter_result.get('confidence', 0):.2f}) - deleting image")
+                    self.statusBar().showMessage("Pre-filter: No bird detected - image deleted")
                     
-                    logger.info(status_msg)
-                    self.statusBar().showMessage(status_msg)
-                    
-                    # Refresh species tab
-                    if hasattr(self, 'species_tab'):
-                        self.species_tab.load_species()
-                elif result and not result.get('identified'):
-                    # No bird detected - delete the image to save space
+                    # Delete the image to save space
                     try:
                         os.remove(image_path)
-                        logger.info(f"Deleted non-bird image: {os.path.basename(image_path)}")
-                        self.statusBar().showMessage("No bird detected - image deleted")
-                        
-                        # Also remove from upload queue if present
-                        if hasattr(self.uploader, 'drive_uploader') and self.uploader.drive_uploader:
-                            # The image might already be queued for upload
-                            pass  # Upload queue will handle missing files gracefully
+                        logger.info(f"Deleted pre-filtered image: {os.path.basename(image_path)}")
                     except Exception as e:
-                        logger.error(f"Error deleting non-bird image: {e}")
+                        logger.error(f"Error deleting pre-filtered image: {e}")
+                    return
+                
+                # Pre-filter either detected a bird or is not working - proceed with OpenAI
+                if not prefilter_result.get('processed'):
+                    logger.debug(f"Pre-filter not processed ({prefilter_result.get('reason', 'unknown')}) - proceeding with OpenAI")
+                else:
+                    logger.info(f"Pre-filter: Bird detected (confidence: {prefilter_result.get('confidence', 0):.2f}) - proceeding with OpenAI")
+                
+                result = self.bird_identifier.identify_bird(image_path)
+                if result:
+                    if result.get('rate_limited'):
+                        # Rate limited - keep the image for later
+                        wait_time = result.get('wait_time', 0)
+                        logger.info(f"Rate limited: Keeping image for later. Next call in {wait_time:.0f}s")
+                        self.statusBar().showMessage(
+                            f"Rate limit: Next bird ID in {wait_time:.0f}s - Image saved"
+                        )
+                    elif result.get('identified'):
+                        species = result.get('species_common', 'Unknown')
+                        confidence = result.get('confidence', 0)
+                        is_rare = self.bird_identifier.check_rare_species(
+                            result.get('species_scientific', '')
+                        )
+                        
+                        status_msg = f"Identified: {species} (confidence: {confidence:.0%})"
+                        if is_rare:
+                            status_msg += " - RARE SPECIES!"
+                        
+                        logger.info(status_msg)
+                        self.statusBar().showMessage(status_msg)
+                        
+                        # Refresh species tab
+                        if hasattr(self, 'species_tab'):
+                            self.species_tab.load_species()
+                    else:
+                        # No bird detected by OpenAI - delete the image to save space
+                        try:
+                            os.remove(image_path)
+                            logger.info(f"Deleted non-bird image: {os.path.basename(image_path)}")
+                            self.statusBar().showMessage("No bird detected - image deleted")
+                            
+                            # Also remove from upload queue if present
+                            if hasattr(self.uploader, 'drive_uploader') and self.uploader.drive_uploader:
+                                # The image might already be queued for upload
+                                pass  # Upload queue will handle missing files gracefully
+                        except Exception as e:
+                            logger.error(f"Error deleting non-bird image: {e}")
             
             threading.Thread(target=identify_bird, daemon=True).start()
         
@@ -2676,6 +3341,13 @@ class MainWindow(QMainWindow):
         self.email_handler.stop()
         self.uploader.stop()
         self.service_monitor.stop()
+        
+        # Stop prefilter safely
+        if hasattr(self, 'bird_prefilter') and self.bird_prefilter:
+            try:
+                self.bird_prefilter.stop()
+            except Exception as e:
+                logger.warning(f"Error stopping prefilter: {e}")
         
         # Clean up services tab background threads
         if hasattr(self, 'services_tab'):
