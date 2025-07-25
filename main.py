@@ -183,7 +183,7 @@ from src.email_handler import EmailHandler
 from src.drive_uploader_simple import CombinedUploader
 from src.ai_bird_identifier import AIBirdIdentifier
 from src.species_tab import SpeciesTab
-from src.bird_prefilter import BirdPreFilter
+# Removed bird_prefilter import
 
 # Set up logging with configuration
 config_path = os.path.join(os.path.dirname(__file__), 'config.json')
@@ -464,6 +464,7 @@ class CameraTab(QWidget):
         # Stats tracking
         self.session_capture_count = 0
         self.last_capture_time = None
+        self.motion_event_count = 0
         self.daily_motion_events = 0
         
         self.setup_ui()
@@ -635,8 +636,8 @@ class CameraTab(QWidget):
         stats_group.setStyleSheet("""
             QGroupBox {
                 font-weight: bold;
-                padding-top: 5px;
-                margin-top: 2px;
+                padding-top: 10px;
+                margin-top: 5px;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
@@ -645,79 +646,58 @@ class CameraTab(QWidget):
             }
         """)
         
-        stats_layout = QGridLayout()
-        stats_layout.setSpacing(0)  # Minimal spacing for compact layout
-        stats_layout.setVerticalSpacing(0)  # No vertical spacing
-        stats_layout.setHorizontalSpacing(3)  # Very small horizontal spacing
-        stats_layout.setContentsMargins(2, 2, 2, 2)  # Minimal margins
-        
-        # Camera Info Section
-        row = 0
+        stats_layout = QVBoxLayout()
+        stats_layout.setSpacing(2)  # Normal vertical spacing
+        stats_layout.setContentsMargins(10, 5, 10, 5)
         
         # Camera Model
-        stats_layout.addWidget(QLabel("Model:"), row, 0)
-        self.camera_model_label = QLabel("Unknown")
-        self.camera_model_label.setStyleSheet("font-weight: bold; color: #4CAF50;")
-        stats_layout.addWidget(self.camera_model_label, row, 1)
+        model_label = QLabel("Model: Unknown")
+        self.camera_model_label = model_label
+        stats_layout.addWidget(model_label)
         
-        # Connection Type
-        stats_layout.addWidget(QLabel("Connection:"), row, 2)
-        self.connection_type_label = QLabel("Disconnected")
-        stats_layout.addWidget(self.connection_type_label, row, 3)
+        # Connection Status
+        connection_label = QLabel("Connection: Disconnected")
+        self.connection_type_label = connection_label
+        stats_layout.addWidget(connection_label)
         
-        row += 1
+        # Sensor and FPS
+        sensor_fps_label = QLabel("Sensor: Unknown | FPS: 0")
+        self.sensor_fps_label = sensor_fps_label
+        stats_layout.addWidget(sensor_fps_label)
         
-        # Sensor Resolution
-        stats_layout.addWidget(QLabel("Sensor:"), row, 0)
-        self.sensor_resolution_label = QLabel("Unknown")
-        stats_layout.addWidget(self.sensor_resolution_label, row, 1)
+        # Separator
+        separator = QFrame()
+        separator.setFrameShape(QFrame.Shape.HLine)
+        separator.setFrameShadow(QFrame.Shadow.Sunken)
+        separator.setStyleSheet("color: #ccc;")
+        stats_layout.addWidget(separator)
         
-        # Current FPS
-        stats_layout.addWidget(QLabel("FPS:"), row, 2)
-        self.fps_label = QLabel("0")
-        self.fps_label.setStyleSheet("font-weight: bold; color: #2196F3;")
-        stats_layout.addWidget(self.fps_label, row, 3)
-        
-        row += 1
-        
-        # Separator line
-        separator = QLabel()
-        separator.setStyleSheet("border-bottom: 1px solid #555; margin: 2px 0;")
-        separator.setFixedHeight(1)
-        stats_layout.addWidget(separator, row, 0, 1, 4)
-        
-        row += 1
-        
-        # Capture Statistics
-        stats_layout.addWidget(QLabel("Photos (session):"), row, 0)
-        self.session_photos_label = QLabel("0")
-        self.session_photos_label.setStyleSheet("font-weight: bold; color: #FF9800;")
-        stats_layout.addWidget(self.session_photos_label, row, 1)
+        # Photos and Motion
+        photos_label = QLabel("Photos (session): 0 | Motion Events: 0")
+        self.photos_motion_label = photos_label
+        stats_layout.addWidget(photos_label)
         
         # Last Capture
-        stats_layout.addWidget(QLabel("Last Capture:"), row, 2)
-        self.last_capture_label = QLabel("None")
-        stats_layout.addWidget(self.last_capture_label, row, 3)
+        last_capture_label = QLabel("Last Capture: None")
+        self.last_capture_label = last_capture_label
+        stats_layout.addWidget(last_capture_label)
         
-        row += 1
-        
-        # Motion Events Today
-        stats_layout.addWidget(QLabel("Motion Events:"), row, 0)
-        self.motion_events_label = QLabel("0")
-        self.motion_events_label.setStyleSheet("font-weight: bold; color: #E91E63;")
-        stats_layout.addWidget(self.motion_events_label, row, 1)
-        
-        # Current Resolution Mode
-        stats_layout.addWidget(QLabel("Resolution:"), row, 2)
-        self.resolution_mode_label = QLabel("4K")
-        stats_layout.addWidget(self.resolution_mode_label, row, 3)
+        # Resolution
+        resolution_label = QLabel("Resolution: 4K")
+        self.resolution_mode_label = resolution_label
+        stats_layout.addWidget(resolution_label)
         
         # Instructions at bottom
-        row += 1
         instructions = QLabel("💡 Click and drag on preview to set Motion ROI")
-        instructions.setStyleSheet("color: #888; font-size: 11px; font-style: italic; padding-top: 2px;")
+        instructions.setStyleSheet("color: #888; font-size: 11px; font-style: italic; margin-top: 5px;")
         instructions.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        stats_layout.addWidget(instructions, row, 0, 1, 4)
+        stats_layout.addWidget(instructions)
+        
+        # Create label references for updates (hidden labels for compatibility)
+        self.sensor_resolution_label = QLabel()
+        self.fps_label = QLabel()
+        self.session_photos_label = QLabel()
+        self.motion_events_label = QLabel()
         
         stats_group.setLayout(stats_layout)
         layout.addWidget(stats_group)
@@ -750,8 +730,11 @@ class CameraTab(QWidget):
         self.preview_label.setPixmap(scaled_pixmap)
         
         # Update FPS in stats (approximate)
-        if hasattr(self, 'fps_label'):
-            self.fps_label.setText("~30")
+        if hasattr(self, 'sensor_fps_label'):
+            sensor_res = getattr(self, 'sensor_resolution_label', QLabel()).text()
+            if sensor_res == "Unknown":
+                sensor_res = "4056x3040"
+            self.sensor_fps_label.setText(f"Sensor: {sensor_res} | FPS: ~30")
     
     def update_camera_stats(self):
         """Update camera statistics display"""
@@ -764,49 +747,50 @@ class CameraTab(QWidget):
             
             # Camera model
             model = device_info.get('name', 'OAK Camera')
-            self.camera_model_label.setText(model)
+            self.camera_model_label.setText(f"Model: {model}")
             
             # Connection type
             usb_speed = device_info.get('usb_speed', 'Unknown')
             if device_info.get('connected'):
-                self.connection_type_label.setText(f"USB {usb_speed}")
+                self.connection_type_label.setText(f"Connection: USB {usb_speed}")
             else:
-                self.connection_type_label.setText(usb_speed)
+                self.connection_type_label.setText(f"Connection: {usb_speed}")
             
-            # Sensor resolution
+            # Sensor resolution and FPS
             sensor_res = device_info.get('sensor_resolution', '4056x3040')
-            self.sensor_resolution_label.setText(sensor_res)
+            fps = getattr(self, 'current_fps', 0)
+            self.sensor_fps_label.setText(f"Sensor: {sensor_res} | FPS: {fps}")
             
-            # Connection status styling
-            if device_info.get('connected'):
-                self.connection_type_label.setStyleSheet("color: #4CAF50;")
-            else:
-                self.connection_type_label.setStyleSheet("color: #F44336;")
+            # Store values in hidden labels for compatibility
+            self.sensor_resolution_label.setText(sensor_res)
+            self.fps_label.setText(str(fps))
         else:
-            self.camera_model_label.setText("Disconnected")
-            self.connection_type_label.setText("Not Connected")
-            self.connection_type_label.setStyleSheet("color: #F44336;")
+            self.camera_model_label.setText("Model: Disconnected")
+            self.connection_type_label.setText("Connection: Not Connected")
+            self.sensor_fps_label.setText("Sensor: Unknown | FPS: 0")
             self.sensor_resolution_label.setText("Unknown")
             self.fps_label.setText("0")
         
-        # Update session photos count
+        # Update photos and motion events
+        self.photos_motion_label.setText(f"Photos (session): {self.session_capture_count} | Motion Events: {self.motion_event_count}")
+        
+        # Store in hidden labels for compatibility
         self.session_photos_label.setText(str(self.session_capture_count))
+        self.motion_events_label.setText(str(self.motion_event_count))
         
         # Update last capture time
         if self.last_capture_time:
             time_str = self.last_capture_time.strftime("%H:%M:%S")
-            self.last_capture_label.setText(time_str)
+            self.last_capture_label.setText(f"Last Capture: {time_str}")
         else:
-            self.last_capture_label.setText("None")
-        
-        # Update motion events (this would need to be connected to motion detection)
-        self.motion_events_label.setText(str(self.daily_motion_events))
+            self.last_capture_label.setText("Last Capture: None")
         
         # Update resolution mode
-        self.resolution_mode_label.setText("4K")
+        self.resolution_mode_label.setText("Resolution: 4K")
     
     def on_motion_detected(self):
         """Called when motion is detected - updates stats"""
+        self.motion_event_count += 1
         self.daily_motion_events += 1
         
     def on_photo_captured(self):
@@ -1330,13 +1314,12 @@ class GalleryTab(QWidget):
 class ServicesTab(QWidget):
     """Services monitoring and control tab"""
     
-    def __init__(self, email_handler, uploader, config=None, bird_identifier=None, bird_prefilter=None):
+    def __init__(self, email_handler, uploader, config=None, bird_identifier=None):
         super().__init__()
         self.email_handler = email_handler
         self.uploader = uploader
         self.config = config or {}
         self.bird_identifier = bird_identifier
-        self.bird_prefilter = bird_prefilter
         
         # Initialize Drive stats monitor
         self.drive_stats_monitor = DriveStatsMonitor(uploader)
@@ -1362,11 +1345,6 @@ class ServicesTab(QWidget):
         self.uptime_timer.start(5000)  # Update every 5 seconds to reduce CPU load
         self.update_uptime()
         
-        # Update pre-filter statistics
-        self.update_prefilter_stats()
-        self.prefilter_timer = QTimer()
-        self.prefilter_timer.timeout.connect(self.update_prefilter_stats)
-        self.prefilter_timer.start(10000)  # Update every 10 seconds to reduce CPU load
     
     def cleanup(self):
         """Clean up background threads"""
@@ -1376,8 +1354,6 @@ class ServicesTab(QWidget):
             self.openai_timer.stop()
         if hasattr(self, 'uptime_timer'):
             self.uptime_timer.stop()
-        if hasattr(self, 'prefilter_timer'):
-            self.prefilter_timer.stop()
     
     def set_mobile_url(self, url):
         """Set the mobile web interface URL"""
@@ -1598,68 +1574,6 @@ class ServicesTab(QWidget):
         right_layout.addWidget(openai_group)
         
         # Local Pre-filter Statistics
-        prefilter_group = QGroupBox("Local Bird Pre-filter")
-        prefilter_layout = QGridLayout()
-        
-        # Title with larger font
-        prefilter_title_label = QLabel("MobileNet Pre-filter")
-        prefilter_title_font = prefilter_title_label.font()
-        prefilter_title_font.setPointSize(14)
-        prefilter_title_font.setBold(True)
-        prefilter_title_label.setFont(prefilter_title_font)
-        prefilter_title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        prefilter_layout.addWidget(prefilter_title_label, 0, 0, 1, 2)
-        
-        # Service status
-        prefilter_layout.addWidget(QLabel("Status:"), 1, 0)
-        self.prefilter_status = QLabel("Initializing...")
-        self.prefilter_status.setStyleSheet("color: orange;")
-        prefilter_layout.addWidget(self.prefilter_status, 1, 1)
-        
-        # Images processed
-        prefilter_layout.addWidget(QLabel("Images Processed:"), 2, 0)
-        self.prefilter_processed_count = QLabel("0")
-        self.prefilter_processed_count.setStyleSheet("font-size: 16px; font-weight: bold; color: #4CAF50;")
-        prefilter_layout.addWidget(self.prefilter_processed_count, 2, 1)
-        
-        # Birds detected
-        prefilter_layout.addWidget(QLabel("Birds Detected:"), 3, 0)
-        self.prefilter_birds_detected = QLabel("0")
-        self.prefilter_birds_detected.setStyleSheet("color: #4CAF50;")
-        prefilter_layout.addWidget(self.prefilter_birds_detected, 3, 1)
-        
-        # No birds detected
-        prefilter_layout.addWidget(QLabel("No Birds Detected:"), 4, 0)
-        self.prefilter_no_birds = QLabel("0")
-        self.prefilter_no_birds.setStyleSheet("color: #ff9800;")
-        prefilter_layout.addWidget(self.prefilter_no_birds, 4, 1)
-        
-        # Detection rate
-        prefilter_layout.addWidget(QLabel("Detection Rate:"), 5, 0)
-        self.prefilter_detection_rate = QLabel("0%")
-        self.prefilter_detection_rate.setStyleSheet("color: #2196F3;")
-        prefilter_layout.addWidget(self.prefilter_detection_rate, 5, 1)
-        
-        # Average processing time
-        prefilter_layout.addWidget(QLabel("Avg Processing:"), 6, 0)
-        self.prefilter_avg_time = QLabel("0.0ms")
-        self.prefilter_avg_time.setStyleSheet("color: #9C27B0;")
-        prefilter_layout.addWidget(self.prefilter_avg_time, 6, 1)
-        
-        # Queue size
-        prefilter_layout.addWidget(QLabel("Queue Size:"), 7, 0)
-        self.prefilter_queue_size = QLabel("0")
-        self.prefilter_queue_size.setStyleSheet("color: #607D8B;")
-        prefilter_layout.addWidget(self.prefilter_queue_size, 7, 1)
-        
-        # Confidence threshold
-        prefilter_layout.addWidget(QLabel("Confidence Threshold:"), 8, 0)
-        self.prefilter_confidence_threshold = QLabel("0.70")
-        self.prefilter_confidence_threshold.setStyleSheet("color: #795548;")
-        prefilter_layout.addWidget(self.prefilter_confidence_threshold, 8, 1)
-        
-        prefilter_group.setLayout(prefilter_layout)
-        right_layout.addWidget(prefilter_group)
         
         right_layout.addStretch()
         
@@ -1897,43 +1811,6 @@ class ServicesTab(QWidget):
             
             self.uptime_label.setText(f"{hours}h {minutes}m {seconds}s")
     
-    def update_prefilter_stats(self):
-        """Update pre-filter statistics display"""
-        if self.bird_prefilter:
-            stats = self.bird_prefilter.get_stats()
-            
-            # Update status
-            if stats.get('enabled'):
-                self.prefilter_status.setText("🟢 Running")
-                self.prefilter_status.setStyleSheet("color: #4CAF50; font-weight: bold;")
-            else:
-                self.prefilter_status.setText("🔴 Disabled")
-                self.prefilter_status.setStyleSheet("color: #f44336; font-weight: bold;")
-            
-            # Update statistics
-            self.prefilter_processed_count.setText(str(stats.get('images_processed', 0)))
-            self.prefilter_birds_detected.setText(str(stats.get('birds_detected', 0)))
-            self.prefilter_no_birds.setText(str(stats.get('no_birds_detected', 0)))
-            
-            # Update detection rate
-            detection_rate = stats.get('detection_rate', 0)
-            self.prefilter_detection_rate.setText(f"{detection_rate:.1f}%")
-            
-            # Update average processing time
-            avg_time = stats.get('average_processing_time', 0) * 1000  # Convert to ms
-            self.prefilter_avg_time.setText(f"{avg_time:.1f}ms")
-            
-            # Update queue size
-            queue_size = stats.get('queue_size', 0)
-            self.prefilter_queue_size.setText(str(queue_size))
-            
-            # Update confidence threshold
-            threshold = stats.get('confidence_threshold', 0.7)
-            self.prefilter_confidence_threshold.setText(f"{threshold:.2f}")
-        else:
-            # No prefilter service available
-            self.prefilter_status.setText("🔴 Not Available")
-            self.prefilter_status.setStyleSheet("color: #f44336;")
     
     def on_save_config(self):
         """Save configuration changes"""
@@ -1996,11 +1873,10 @@ class ServicesTab(QWidget):
 class ConfigTab(QWidget):
     """Configuration tab for all system settings"""
     
-    def __init__(self, config_manager, bird_prefilter=None):
+    def __init__(self, config_manager):
         super().__init__()
         self.config_manager = config_manager
         self.config = config_manager.config
-        self.bird_prefilter = bird_prefilter
         self.setup_ui()
         self.load_current_settings()
     
@@ -2025,7 +1901,6 @@ class ConfigTab(QWidget):
         self.create_openai_section(scroll_layout)
         
         # Pre-filter Configuration
-        self.create_prefilter_section(scroll_layout)
         
         # System Management
         self.create_system_section(scroll_layout)
@@ -2162,45 +2037,6 @@ class ConfigTab(QWidget):
         group.setLayout(group_layout)
         layout.addWidget(group)
     
-    def create_prefilter_section(self, layout):
-        group = QGroupBox("Local Pre-filter (MobileNet)")
-        group_layout = QGridLayout()
-        
-        # Enable pre-filter
-        self.prefilter_enabled = QCheckBox("Enable Local Bird Pre-filtering")
-        group_layout.addWidget(self.prefilter_enabled, 0, 0, 1, 3)
-        
-        # Confidence threshold slider
-        group_layout.addWidget(QLabel("Confidence Threshold:"), 1, 0)
-        self.prefilter_confidence_slider = QSlider(Qt.Orientation.Horizontal)
-        self.prefilter_confidence_slider.setRange(10, 95)  # 0.10 to 0.95
-        self.prefilter_confidence_slider.setValue(70)  # Default 0.70
-        self.prefilter_confidence_slider.setTickPosition(QSlider.TickPosition.TicksBelow)
-        self.prefilter_confidence_slider.setTickInterval(10)
-        self.prefilter_confidence_slider.valueChanged.connect(self.on_prefilter_confidence_changed)
-        group_layout.addWidget(self.prefilter_confidence_slider, 1, 1)
-        
-        # Connect enable/disable checkbox
-        self.prefilter_enabled.stateChanged.connect(self.on_prefilter_enabled_changed)
-        
-        self.prefilter_confidence_label = QLabel("0.70")
-        self.prefilter_confidence_label.setStyleSheet("font-weight: bold; color: #4CAF50;")
-        group_layout.addWidget(self.prefilter_confidence_label, 1, 2)
-        
-        # Info text
-        info_label = QLabel("Pre-filter uses a lightweight ML model to detect birds before sending to OpenAI,\nreducing API calls by 50-80% and saving costs.")
-        info_label.setStyleSheet("font-size: 11px; color: #888; font-style: italic;")
-        info_label.setWordWrap(True)
-        group_layout.addWidget(info_label, 2, 0, 1, 3)
-        
-        # Model status
-        group_layout.addWidget(QLabel("Model Status:"), 3, 0)
-        self.prefilter_model_status = QLabel("Not loaded")
-        self.prefilter_model_status.setStyleSheet("color: #ff9800;")
-        group_layout.addWidget(self.prefilter_model_status, 3, 1, 1, 2)
-        
-        group.setLayout(group_layout)
-        layout.addWidget(group)
     
     def create_system_section(self, layout):
         group = QGroupBox("System Management")
@@ -2312,21 +2148,6 @@ class ConfigTab(QWidget):
         self.openai_key.setText(openai_config.get('api_key', ''))
         self.openai_limit.setValue(openai_config.get('max_images_per_hour', 10))
         
-        # Pre-filter settings
-        prefilter_config = self.config.get('prefilter', {})
-        prefilter_enabled = prefilter_config.get('enabled', True)
-        self.prefilter_enabled.setChecked(prefilter_enabled)
-        confidence_threshold = prefilter_config.get('confidence_threshold', 0.7)
-        slider_value = int(confidence_threshold * 100)  # Convert 0.70 to 70
-        self.prefilter_confidence_slider.setValue(slider_value)
-        self.prefilter_confidence_label.setText(f"{confidence_threshold:.2f}")
-        
-        # Enable/disable slider based on checkbox state
-        self.prefilter_confidence_slider.setEnabled(prefilter_enabled)
-        self.prefilter_confidence_label.setEnabled(prefilter_enabled)
-        
-        # Update model status on startup
-        self.update_prefilter_model_status()
         
         # Logging settings
         logging_config = self.config.get('logging', {})
@@ -2722,81 +2543,6 @@ class ConfigTab(QWidget):
             self.logging_status.setText("Status: Disabled (Errors Only)")
             self.logging_status.setStyleSheet("color: #FF9800; font-weight: bold;")
     
-    def on_prefilter_confidence_changed(self, value):
-        """Handle prefilter confidence threshold slider change"""
-        confidence = value / 100.0  # Convert 70 to 0.70
-        self.prefilter_confidence_label.setText(f"{confidence:.2f}")
-        
-        # Update the prefilter service immediately
-        if self.bird_prefilter:
-            try:
-                self.bird_prefilter.set_confidence_threshold(confidence)
-                
-                # Update model status display
-                self.update_prefilter_model_status()
-                    
-            except Exception as e:
-                logger.warning(f"Could not update prefilter confidence threshold: {e}")
-                self.prefilter_model_status.setText("⚠️ Error")
-                self.prefilter_model_status.setStyleSheet("color: #ff9800;")
-    
-    def on_prefilter_enabled_changed(self, state):
-        """Handle prefilter enable/disable toggle"""
-        enabled = state == 2  # Qt.CheckState.Checked = 2
-        
-        if self.bird_prefilter:
-            try:
-                # Update both the service state and config setting
-                self.bird_prefilter.enabled = enabled
-                self.bird_prefilter.config_enabled = enabled
-                
-                if enabled:
-                    # If enabling, start processing thread if not already running
-                    if not self.bird_prefilter.running:
-                        self.bird_prefilter.start_processing_thread()
-                    logger.info("Pre-filter service enabled")
-                else:
-                    # If disabling, stop processing but keep thread alive for statistics
-                    logger.info("Pre-filter service disabled")
-                
-                # Update model status display
-                self.update_prefilter_model_status()
-                
-                # Enable/disable the confidence slider based on prefilter state
-                self.prefilter_confidence_slider.setEnabled(enabled)
-                self.prefilter_confidence_label.setEnabled(enabled)
-                
-            except Exception as e:
-                logger.warning(f"Could not toggle prefilter service: {e}")
-    
-    def update_prefilter_model_status(self):
-        """Update the prefilter model status display"""
-        if self.bird_prefilter:
-            try:
-                stats = self.bird_prefilter.get_stats()
-                
-                # Check if model file exists and was loaded successfully
-                model_exists = self.bird_prefilter.model_path.exists()
-                has_interpreter = hasattr(self.bird_prefilter, 'interpreter') and self.bird_prefilter.interpreter
-                
-                if model_exists and has_interpreter:
-                    if stats.get('enabled'):
-                        self.prefilter_model_status.setText("🟢 Model loaded & active")
-                        self.prefilter_model_status.setStyleSheet("color: #4CAF50;")
-                    else:
-                        self.prefilter_model_status.setText("🟡 Model loaded (disabled)")
-                        self.prefilter_model_status.setStyleSheet("color: #FF9800;")
-                else:
-                    self.prefilter_model_status.setText("🔴 Model not found")
-                    self.prefilter_model_status.setStyleSheet("color: #f44336;")
-                    
-            except Exception as e:
-                logger.warning(f"Could not get prefilter status: {e}")
-                self.prefilter_model_status.setText("⚠️ Error")
-                self.prefilter_model_status.setStyleSheet("color: #ff9800;")
-        else:
-            self.prefilter_model_status.setText("⚠️ Service unavailable")
-            self.prefilter_model_status.setStyleSheet("color: #ff9800;")
     
     def save_config(self):
         """Save configuration to file"""
@@ -2845,12 +2591,6 @@ class ConfigTab(QWidget):
                 'max_images_per_hour': self.openai_limit.value()
             }
             
-            # Pre-filter configuration
-            confidence_value = self.prefilter_confidence_slider.value() / 100.0  # Convert 70 to 0.70
-            self.config['prefilter'] = {
-                'enabled': self.prefilter_enabled.isChecked(),
-                'confidence_threshold': confidence_value
-            }
             
             # Save to file
             self.config_manager.save_config()
@@ -2987,7 +2727,7 @@ class MainWindow(QMainWindow):
         self.bird_identifier = AIBirdIdentifier(self.config)
         
         # Bird Pre-filter Service
-        self.bird_prefilter = BirdPreFilter(self.config)
+        # Removed bird prefilter initialization
         
         # Service monitor
         self.service_monitor = ServiceMonitor()
@@ -3020,7 +2760,7 @@ class MainWindow(QMainWindow):
         self.tab_widget.addTab(self.gallery_tab, "Gallery")
         
         # Services tab
-        self.services_tab = ServicesTab(self.email_handler, self.uploader, self.config, self.bird_identifier, self.bird_prefilter)
+        self.services_tab = ServicesTab(self.email_handler, self.uploader, self.config, self.bird_identifier)
         self.tab_widget.addTab(self.services_tab, "Services")
         
         # Species tab
@@ -3028,7 +2768,7 @@ class MainWindow(QMainWindow):
         self.tab_widget.addTab(self.species_tab, "Species")
         
         # Configuration tab
-        self.config_tab = ConfigTab(self.config_manager, self.bird_prefilter)
+        self.config_tab = ConfigTab(self.config_manager)
         self.tab_widget.addTab(self.config_tab, "Configuration")
         
         # Logs tab
@@ -3237,43 +2977,10 @@ class MainWindow(QMainWindow):
         # Queue for upload
         self.uploader.queue_file(image_path)
         
-        # AI Bird Identification with Pre-filtering (Day 1 Feature + Local Pre-filter)
+        # AI Bird Identification (Day 1 Feature)
         if self.bird_identifier.enabled:
             # Run identification in a separate thread to avoid blocking
             def identify_bird():
-                # First, run pre-filter to check if birds are likely present (with timeout)
-                prefilter_result = {'processed': False, 'bird_detected': None, 'reason': 'Pre-filter disabled'}
-                
-                try:
-                    # Only try pre-filter if service exists and is enabled
-                    if (hasattr(self, 'bird_prefilter') and self.bird_prefilter and 
-                        hasattr(self.bird_prefilter, 'enabled') and self.bird_prefilter.enabled):
-                        # Process with short timeout to avoid blocking
-                        prefilter_result = self.bird_prefilter.process_image(image_path, timeout=0.1)
-                except Exception as e:
-                    logger.warning(f"Pre-filter error (skipping): {e}")
-                    prefilter_result = {'processed': False, 'bird_detected': None, 'reason': f'Error: {e}'}
-                
-                # If pre-filter is working and says no bird detected, skip OpenAI call
-                if (prefilter_result.get('processed') and 
-                    prefilter_result.get('bird_detected') is False):
-                    
-                    logger.info(f"Pre-filter: No bird detected (confidence: {prefilter_result.get('confidence', 0):.2f}) - deleting image")
-                    self.statusBar().showMessage("Pre-filter: No bird detected - image deleted")
-                    
-                    # Delete the image to save space
-                    try:
-                        os.remove(image_path)
-                        logger.info(f"Deleted pre-filtered image: {os.path.basename(image_path)}")
-                    except Exception as e:
-                        logger.error(f"Error deleting pre-filtered image: {e}")
-                    return
-                
-                # Pre-filter either detected a bird or is not working - proceed with OpenAI
-                if not prefilter_result.get('processed'):
-                    logger.debug(f"Pre-filter not processed ({prefilter_result.get('reason', 'unknown')}) - proceeding with OpenAI")
-                else:
-                    logger.info(f"Pre-filter: Bird detected (confidence: {prefilter_result.get('confidence', 0):.2f}) - proceeding with OpenAI")
                 
                 result = self.bird_identifier.identify_bird(image_path)
                 if result:
@@ -3342,12 +3049,6 @@ class MainWindow(QMainWindow):
         self.uploader.stop()
         self.service_monitor.stop()
         
-        # Stop prefilter safely
-        if hasattr(self, 'bird_prefilter') and self.bird_prefilter:
-            try:
-                self.bird_prefilter.stop()
-            except Exception as e:
-                logger.warning(f"Error stopping prefilter: {e}")
         
         # Clean up services tab background threads
         if hasattr(self, 'services_tab'):

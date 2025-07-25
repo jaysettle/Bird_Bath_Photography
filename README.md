@@ -52,7 +52,6 @@ No JSON editing required - everything is configured through the GUI.
 |---------|-------------|
 | Motion Detection | Automatic bird photography with ROI selection |
 | AI Identification | Species recognition with confidence scores |
-| Pre-filtering | Local TensorFlow Lite model reduces API calls |
 | Photo Gallery | Browse all photos with thumbnails and day grouping |
 | Statistics | Track species diversity and counts |
 | Auto-Restart | Watchdog service keeps system running |
