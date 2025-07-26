@@ -28,17 +28,6 @@ python3 main.py
 - **Desktop**: Run `python3 main.py`
 - **Mobile**: Open `http://your-pi-ip:8080` in browser
 
-## Optional Services
-
-```bash
-# Install as system service
-sudo ./install_watchdog_dynamic.sh
-sudo systemctl enable bird-detection-watchdog
-
-# Setup Google Drive
-python3 setup_google_drive.py
-```
-
 ## Troubleshooting
 
 - **Camera not working**: Check `lsusb | grep -i movidius`
