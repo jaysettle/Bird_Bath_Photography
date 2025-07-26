@@ -51,6 +51,7 @@ https://shop.luxonis.com/products/oak-1?variant=42664380334303
 
 ## Bird Bath
 <img width="287" height="392" alt="image" src="https://github.com/user-attachments/assets/6356d345-94ea-4c81-ba3b-df9c1dde2ca8" />
+
 https://www.amazon.com/dp/B07K1WY1M4?ref_=ppx_hzsearch_conn_dt_b_fed_asin_title_2
 
 **Key Features:**
