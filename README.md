@@ -72,6 +72,10 @@ This is an open-source bird conservation project. Contributions welcome!
 Open source - use responsibly for bird conservation and education.
 
 <img width="996" height="779" alt="image" src="https://github.com/user-attachments/assets/ea5ffd6c-bbd2-4da8-9cbd-1835632996ac" />
+<img width="1000" height="778" alt="image" src="https://github.com/user-attachments/assets/c8121107-fb95-4e66-a152-ab1b145e9e04" />
+<img width="999" height="779" alt="image" src="https://github.com/user-attachments/assets/12560abe-4195-4d65-b80c-6f8d6a688dc4" />
+<img width="998" height="778" alt="image" src="https://github.com/user-attachments/assets/350f1a96-21e5-4210-8f9d-9a69c3f45eb4" />
+<img width="997" height="776" alt="image" src="https://github.com/user-attachments/assets/f71e489f-d4d0-474f-932b-366e7632b5e1" />
 
 
 <img width="1684" height="950" alt="image" src="https://github.com/user-attachments/assets/9b65256a-1bbc-410a-bd42-454ae776ec02" />
