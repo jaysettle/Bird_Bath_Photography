@@ -49,6 +49,10 @@ The app automatically creates config.json from the template on first run.
 
 https://shop.luxonis.com/products/oak-1?variant=42664380334303
 
+## Bird Bath
+https://www.amazon.com/dp/B07K1WY1M4?ref_=ppx_hzsearch_conn_dt_b_fed_asin_title_2
+<img width="287" height="392" alt="image" src="https://github.com/user-attachments/assets/6356d345-94ea-4c81-ba3b-df9c1dde2ca8" />
+
 **Key Features:**
 - 12 MP central RGB camera with auto-focus and fixed-focus variants
 - Global shutter option with 1 MP OV9782 sensor
