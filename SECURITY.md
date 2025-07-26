@@ -87,7 +87,7 @@ chmod 600 .env
 - Delete this file to re-authenticate
 
 ### Network Security
-- Web interface runs on port 5000 by default
+- Web interface runs on port 8080 by default
 - Only expose to trusted networks
 - Consider using a reverse proxy with HTTPS for remote access
 
