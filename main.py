@@ -1086,7 +1086,7 @@ class GalleryTab(QWidget):
             images_by_date[date_str].append(image_path)
             
         # Create thumbnails grouped by date
-        col_count = 5  # Number of columns
+        col_count = 4  # Number of columns to fit in 1000px width
         current_row = 0
         
         for date_str in sorted(images_by_date.keys(), reverse=True):
@@ -1124,7 +1124,7 @@ class GalleryTab(QWidget):
     def create_thumbnail(self, image_path):
         """Create a thumbnail widget for an image"""
         widget = QWidget()
-        widget.setFixedSize(220, 210)  # Adjusted for 4:3 thumbnail
+        widget.setFixedSize(200, 190)  # Smaller to fit 4 columns in 1000px width
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(3, 3, 3, 3)  # Minimal margins
         layout.setSpacing(1)  # Very tight spacing
@@ -1137,7 +1137,7 @@ class GalleryTab(QWidget):
         
         # Thumbnail label - 4:3 aspect ratio
         label = QLabel()
-        label.setFixedSize(200, 150)  # 4:3 aspect ratio (200 ÷ 150 = 1.33)
+        label.setFixedSize(180, 135)  # 4:3 aspect ratio (180 ÷ 135 = 1.33)
         label.setScaledContents(False)  # Don't stretch - maintain aspect ratio
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         label.setStyleSheet("""
@@ -1414,59 +1414,8 @@ class ServicesTab(QWidget):
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
         
-        # Google Drive Upload Services
-        drive_group = QGroupBox("Google Drive Upload Services")
-        drive_layout = QGridLayout()
-        
-        # Folder name
-        drive_layout.addWidget(QLabel("Folder:"), 0, 0)
-        folder_name = self.uploader.config.get('services', {}).get('drive_upload', {}).get('folder_name', 'Unknown')
-        self.drive_folder_name = QLabel(folder_name)
-        self.drive_folder_name.setStyleSheet("color: #ffffff; font-weight: bold;")
-        drive_layout.addWidget(self.drive_folder_name, 0, 1)
-        
-        # Drive upload status
-        drive_layout.addWidget(QLabel("Status:"), 1, 0)
-        self.drive_status = QLabel("Checking...")
-        self.drive_status.setStyleSheet("color: orange;")
-        drive_layout.addWidget(self.drive_status, 1, 1)
-        
-        # Upload queue
-        drive_layout.addWidget(QLabel("Queue:"), 2, 0)
-        self.drive_queue = QLabel("N/A")
-        self.drive_queue.setStyleSheet("color: gray;")
-        drive_layout.addWidget(self.drive_queue, 2, 1)
-        
-        # File count
-        drive_layout.addWidget(QLabel("Files in Drive:"), 3, 0)
-        self.drive_file_count = QLabel("0")
-        drive_layout.addWidget(self.drive_file_count, 3, 1)
-        
-        # Total size
-        drive_layout.addWidget(QLabel("Total Size:"), 4, 0)
-        self.drive_total_size = QLabel("0.0 MB")
-        drive_layout.addWidget(self.drive_total_size, 4, 1)
-        
-        # Latest file
-        drive_layout.addWidget(QLabel("Latest Upload:"), 5, 0)
-        self.drive_latest_file = QLabel("None")
-        drive_layout.addWidget(self.drive_latest_file, 5, 1)
-        
-        # Drive folder link
-        drive_layout.addWidget(QLabel("View Folder:"), 6, 0)
-        self.drive_folder_link = QLabel("Open Drive Folder")
-        self.drive_folder_link.setStyleSheet("color: #4285f4; text-decoration: underline;")
-        self.drive_folder_link.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.drive_folder_link.mousePressEvent = self.on_drive_folder_link_clicked
-        drive_layout.addWidget(self.drive_folder_link, 6, 1)
-        
-        # Clear folder button
-        self.clear_drive_btn = QPushButton("Clear Drive Folder")
-        self.clear_drive_btn.clicked.connect(self.on_clear_drive_folder)
-        drive_layout.addWidget(self.clear_drive_btn, 7, 0, 1, 2)
-        
-        drive_group.setLayout(drive_layout)
-        left_layout.addWidget(drive_group)
+        # Move Google Drive services to right side - placeholder for now
+        pass
         
         # Email service status
         email_group = QGroupBox("Email Service")
@@ -1564,9 +1513,63 @@ class ServicesTab(QWidget):
         
         left_layout.addStretch()
         
-        # Right side widget - OpenAI Statistics
+        # Right side widget - Google Drive and OpenAI Statistics
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
+        
+        # Google Drive Upload Services (moved to right for more space)
+        drive_group = QGroupBox("Google Drive Upload Services")
+        drive_layout = QGridLayout()
+        
+        # Folder name
+        drive_layout.addWidget(QLabel("Folder:"), 0, 0)
+        folder_name = self.uploader.config.get('services', {}).get('drive_upload', {}).get('folder_name', 'Unknown')
+        self.drive_folder_name = QLabel(folder_name)
+        self.drive_folder_name.setStyleSheet("font-weight: bold; color: #2E7D32;")  # Dark green for readability
+        drive_layout.addWidget(self.drive_folder_name, 0, 1)
+        
+        # Drive upload status
+        drive_layout.addWidget(QLabel("Status:"), 1, 0)
+        self.drive_status = QLabel("Checking...")
+        self.drive_status.setStyleSheet("color: #FF6F00; font-weight: bold;")  # Dark orange for better readability
+        drive_layout.addWidget(self.drive_status, 1, 1)
+        
+        # Upload queue
+        drive_layout.addWidget(QLabel("Queue:"), 2, 0)
+        self.drive_queue = QLabel("N/A")
+        self.drive_queue.setStyleSheet("color: #424242; font-weight: bold;")  # Dark gray for readability
+        drive_layout.addWidget(self.drive_queue, 2, 1)
+        
+        # File count
+        drive_layout.addWidget(QLabel("Files in Drive:"), 3, 0)
+        self.drive_file_count = QLabel("0")
+        drive_layout.addWidget(self.drive_file_count, 3, 1)
+        
+        # Total size
+        drive_layout.addWidget(QLabel("Total Size:"), 4, 0)
+        self.drive_total_size = QLabel("0.0 MB")
+        drive_layout.addWidget(self.drive_total_size, 4, 1)
+        
+        # Latest file
+        drive_layout.addWidget(QLabel("Latest Upload:"), 5, 0)
+        self.drive_latest_file = QLabel("None")
+        drive_layout.addWidget(self.drive_latest_file, 5, 1)
+        
+        # Drive folder link
+        drive_layout.addWidget(QLabel("View Folder:"), 6, 0)
+        self.drive_folder_link = QLabel("Open Drive Folder")
+        self.drive_folder_link.setStyleSheet("color: #1976D2; text-decoration: underline; font-weight: bold;")  # Darker blue for better contrast
+        self.drive_folder_link.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.drive_folder_link.mousePressEvent = self.on_drive_folder_link_clicked
+        drive_layout.addWidget(self.drive_folder_link, 6, 1)
+        
+        # Clear folder button
+        self.clear_drive_btn = QPushButton("Clear Drive Folder")
+        self.clear_drive_btn.clicked.connect(self.on_clear_drive_folder)
+        drive_layout.addWidget(self.clear_drive_btn, 7, 0, 1, 2)
+        
+        drive_group.setLayout(drive_layout)
+        right_layout.addWidget(drive_group)
         
         # OpenAI API Statistics
         openai_group = QGroupBox("OpenAI Bird Identification")
@@ -1589,13 +1592,11 @@ class ServicesTab(QWidget):
         
         # Reset time info
         reset_label = QLabel("Resets at midnight")
-        reset_label.setStyleSheet("font-size: 10px; color: #888;")
+        reset_label.setStyleSheet("font-size: 11px; color: #424242;")  # Darker gray for better readability
         openai_layout.addWidget(reset_label, 2, 0, 1, 2)
         
         openai_group.setLayout(openai_layout)
         right_layout.addWidget(openai_group)
-        
-        # Local Pre-filter Statistics
         
         right_layout.addStretch()
         
