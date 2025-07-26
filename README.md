@@ -2,6 +2,8 @@
 
 Automatically photograph and identify birds (or other things) at your bird bath or feeder using AI and computer vision.
 
+<img width="1001" height="777" alt="image" src="https://github.com/user-attachments/assets/81bba8fe-3f49-4206-a75c-f98152286f6a" />
+
 ## What It Does
 
 - AI identifies bird species using OpenAI Vision API
@@ -68,3 +70,4 @@ This is an open-source bird conservation project. Contributions welcome!
 ## License
 
 Open source - use responsibly for bird conservation and education.
+<img width="1684" height="950" alt="image" src="https://github.com/user-attachments/assets/9b65256a-1bbc-410a-bd42-454ae776ec02" />
