@@ -71,7 +71,7 @@ Access your bird monitoring system from your network:
 
 ## Contributing
 
-This is an open-source bird conservation project. Contributions welcome!
+This is an open-source bird conservation project. Contributions welcome.
 
 ## License
 
