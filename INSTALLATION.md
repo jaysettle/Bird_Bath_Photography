@@ -28,16 +28,7 @@ chmod +x install.sh
 ./install.sh
 ```
 
-### 3. Configure the System
-```bash
-# Copy example configuration
-cp config.example.json config.json
-
-# Edit configuration with your settings
-nano config.json
-```
-
-### 4. Start the Application
+### 3. Start the Application
 ```bash
 python3 main.py
 ```
