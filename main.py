@@ -197,18 +197,12 @@ class InteractivePreviewLabel(QLabel):
     
     def __init__(self):
         super().__init__()
-        # Set size to maintain 4:3 aspect ratio
-        self.setMinimumSize(640, 480)
-        self.setMaximumSize(800, 600)
+        # Natural camera preview dimensions (no scaling/stretching)
+        self.setFixedSize(600, 400)  # Natural camera preview size
         self.setStyleSheet("border: 2px solid #555555; background-color: #252525;")
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setText("Camera Preview")
-        self.setScaledContents(False)  # Don't stretch - we'll handle scaling ourselves
-        
-        # Set size policy to maintain aspect ratio
-        size_policy = QSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
-        size_policy.setHeightForWidth(True)
-        self.setSizePolicy(size_policy)
+        self.setScaledContents(False)  # No scaling - show at natural size
         
         # ROI selection state
         self.drawing = False
@@ -218,8 +212,8 @@ class InteractivePreviewLabel(QLabel):
         self.current_pixmap = None
         
     def heightForWidth(self, width):
-        """Maintain 4:3 aspect ratio"""
-        return int(width * 3 / 4)
+        """Maintain 16:9 aspect ratio (locked)"""
+        return int(width * 9 / 16)
         
     def mousePressEvent(self, event):
         """Handle mouse press for ROI selection"""
@@ -291,6 +285,7 @@ class InteractivePreviewLabel(QLabel):
         """Override setPixmap to store current pixmap"""
         self.current_pixmap = pixmap
         super().setPixmap(pixmap)
+    
         
     def clear_roi(self):
         """Clear the ROI rectangle"""
@@ -473,25 +468,48 @@ class CameraTab(QWidget):
         
     def setup_ui(self):
         """Setup the camera tab UI"""
-        layout = QHBoxLayout()
+        main_layout = QVBoxLayout()
         
-        # Left side - Camera preview
-        preview_layout = QVBoxLayout()
+        # Top section - Preview sized to actual image
+        preview_container = QWidget()
+        preview_layout = QVBoxLayout(preview_container)
+        preview_layout.setContentsMargins(0, 0, 0, 0)
         
-        # Camera preview label
+        # Camera preview label - centered
+        preview_center_layout = QHBoxLayout()
+        preview_center_layout.addStretch()
+        
         self.preview_label = InteractivePreviewLabel()
         self.preview_label.roi_selected.connect(self.on_roi_selected)
-        preview_layout.addWidget(self.preview_label)
+        preview_center_layout.addWidget(self.preview_label)
         
-        # Camera stats panel
-        self.create_camera_stats_panel(preview_layout)
+        preview_center_layout.addStretch()
+        preview_layout.addLayout(preview_center_layout)
         
-        # Right side - Controls
-        controls_layout = QVBoxLayout()
+        # Bottom section - Controls adapt to preview width
+        bottom_panel = QWidget()
+        bottom_panel.setMaximumHeight(350)
+        bottom_layout = QHBoxLayout(bottom_panel)
+        bottom_layout.setContentsMargins(5, 5, 5, 5)
+        bottom_layout.setSpacing(5)
         
-        # Camera controls
-        camera_group = QGroupBox("Camera Controls")
+        # Left column for camera and motion controls
+        left_column = QWidget()
+        left_layout = QVBoxLayout(left_column)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(5)
+        
+        # Right column for motion settings and actions
+        right_column = QWidget()
+        right_layout = QVBoxLayout(right_column)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(5)
+        
+        # Camera controls - compact version
+        camera_group = QGroupBox("Camera")
         camera_layout = QGridLayout()
+        camera_layout.setSpacing(2)
+        camera_layout.setContentsMargins(5, 5, 5, 5)
         
         # Focus slider
         camera_layout.addWidget(QLabel("Focus:"), 0, 0)
@@ -529,7 +547,7 @@ class CameraTab(QWidget):
         self.wb_value = QLabel("6637K")
         camera_layout.addWidget(self.wb_value, 3, 2)
         
-        # ISO sliders
+        # ISO Min
         camera_layout.addWidget(QLabel("ISO Min:"), 4, 0)
         self.iso_min_slider = QSlider(Qt.Orientation.Horizontal)
         self.iso_min_slider.setRange(100, 3200)
@@ -539,6 +557,7 @@ class CameraTab(QWidget):
         self.iso_min_value = QLabel("100")
         camera_layout.addWidget(self.iso_min_value, 4, 2)
         
+        # ISO Max
         camera_layout.addWidget(QLabel("ISO Max:"), 5, 0)
         self.iso_max_slider = QSlider(Qt.Orientation.Horizontal)
         self.iso_max_slider.setRange(100, 3200)
@@ -549,11 +568,13 @@ class CameraTab(QWidget):
         camera_layout.addWidget(self.iso_max_value, 5, 2)
         
         camera_group.setLayout(camera_layout)
-        controls_layout.addWidget(camera_group)
+        left_layout.addWidget(camera_group)
         
-        # Motion detection controls
+        # Motion detection controls - compact
         motion_group = QGroupBox("Motion Detection")
         motion_layout = QGridLayout()
+        motion_layout.setSpacing(2)
+        motion_layout.setContentsMargins(5, 5, 5, 5)
         
         # Sensitivity slider
         motion_layout.addWidget(QLabel("Sensitivity:"), 0, 0)
@@ -588,7 +609,7 @@ class CameraTab(QWidget):
         motion_layout.addLayout(roi_layout, 2, 0, 1, 3)
         
         motion_group.setLayout(motion_layout)
-        controls_layout.addWidget(motion_group)
+        left_layout.addWidget(motion_group)
         
         # Motion detection settings
         motion_settings_group = QGroupBox("Motion Settings")
@@ -605,34 +626,44 @@ class CameraTab(QWidget):
         motion_settings_layout.addWidget(self.debounce_value, 0, 2)
         
         motion_settings_group.setLayout(motion_settings_layout)
-        controls_layout.addWidget(motion_settings_group)
+        right_layout.addWidget(motion_settings_group)
         
-        # Action buttons
+        # Action buttons - compact
         action_group = QGroupBox("Actions")
         action_layout = QVBoxLayout()
+        action_layout.setSpacing(2)
+        action_layout.setContentsMargins(5, 5, 5, 5)
         
-        self.capture_btn = QPushButton("Manual Capture")
+        self.capture_btn = QPushButton("Capture")
+        self.capture_btn.setMaximumHeight(30)
         self.capture_btn.clicked.connect(self.on_manual_capture)
         action_layout.addWidget(self.capture_btn)
         
-        self.save_settings_btn = QPushButton("Save Settings")
+        self.save_settings_btn = QPushButton("Save")
+        self.save_settings_btn.setMaximumHeight(30)
         self.save_settings_btn.clicked.connect(self.on_save_settings)
         action_layout.addWidget(self.save_settings_btn)
         
         action_group.setLayout(action_layout)
-        controls_layout.addWidget(action_group)
+        right_layout.addWidget(action_group)
         
-        controls_layout.addStretch()
+        # Add camera stats to the right column
+        self.create_camera_stats_panel(right_layout)
         
-        # Add to main layout
-        layout.addLayout(preview_layout, 2)
-        layout.addLayout(controls_layout, 1)
+        # Add columns to bottom layout
+        bottom_layout.addWidget(left_column)
+        bottom_layout.addWidget(right_column)
         
-        self.setLayout(layout)
+        # Add preview on top and controls on bottom
+        main_layout.addWidget(preview_container, 3)  # Preview takes 3/4 of vertical space
+        main_layout.addWidget(bottom_panel, 1)  # Controls take 1/4
+        
+        self.setLayout(main_layout)
+    
     
     def create_camera_stats_panel(self, layout):
-        """Create camera statistics panel below preview"""
-        stats_group = QGroupBox("Camera Statistics")
+        """Create camera statistics panel for bottom panel"""
+        stats_group = QGroupBox("Statistics")
         stats_group.setStyleSheet("""
             QGroupBox {
                 font-weight: bold;
@@ -646,52 +677,42 @@ class CameraTab(QWidget):
             }
         """)
         
-        stats_layout = QVBoxLayout()
-        stats_layout.setSpacing(2)  # Normal vertical spacing
-        stats_layout.setContentsMargins(10, 5, 10, 5)
+        # Use grid layout for more compact horizontal display
+        stats_layout = QGridLayout()
+        stats_layout.setSpacing(2)
+        stats_layout.setContentsMargins(5, 5, 5, 5)
         
-        # Camera Model
-        model_label = QLabel("Model: Unknown")
-        self.camera_model_label = model_label
-        stats_layout.addWidget(model_label)
+        # Organize stats in a 2-column grid
+        # Column 1
+        self.camera_model_label = QLabel("Model: Unknown")
+        self.camera_model_label.setStyleSheet("font-size: 11px;")
+        stats_layout.addWidget(self.camera_model_label, 0, 0)
         
-        # Connection Status
-        connection_label = QLabel("Connection: Disconnected")
-        self.connection_type_label = connection_label
-        stats_layout.addWidget(connection_label)
+        self.connection_type_label = QLabel("Connection: Disconnected")
+        self.connection_type_label.setStyleSheet("font-size: 11px;")
+        stats_layout.addWidget(self.connection_type_label, 1, 0)
         
-        # Sensor and FPS
-        sensor_fps_label = QLabel("Sensor: Unknown | FPS: 0")
-        self.sensor_fps_label = sensor_fps_label
-        stats_layout.addWidget(sensor_fps_label)
+        self.sensor_fps_label = QLabel("Sensor: Unknown | FPS: 0")
+        self.sensor_fps_label.setStyleSheet("font-size: 11px;")
+        stats_layout.addWidget(self.sensor_fps_label, 2, 0)
         
-        # Separator
-        separator = QFrame()
-        separator.setFrameShape(QFrame.Shape.HLine)
-        separator.setFrameShadow(QFrame.Shadow.Sunken)
-        separator.setStyleSheet("color: #ccc;")
-        stats_layout.addWidget(separator)
+        self.resolution_mode_label = QLabel("Resolution: 4K")
+        self.resolution_mode_label.setStyleSheet("font-size: 11px;")
+        stats_layout.addWidget(self.resolution_mode_label, 3, 0)
         
-        # Photos and Motion
-        photos_label = QLabel("Photos (session): 0 | Motion Events: 0")
-        self.photos_motion_label = photos_label
-        stats_layout.addWidget(photos_label)
+        # Column 2
+        self.photos_motion_label = QLabel("Photos: 0 | Events: 0")
+        self.photos_motion_label.setStyleSheet("font-size: 11px;")
+        stats_layout.addWidget(self.photos_motion_label, 0, 1)
         
-        # Last Capture
-        last_capture_label = QLabel("Last Capture: None")
-        self.last_capture_label = last_capture_label
-        stats_layout.addWidget(last_capture_label)
+        self.last_capture_label = QLabel("Last: None")
+        self.last_capture_label.setStyleSheet("font-size: 11px;")
+        stats_layout.addWidget(self.last_capture_label, 1, 1)
         
-        # Resolution
-        resolution_label = QLabel("Resolution: 4K")
-        self.resolution_mode_label = resolution_label
-        stats_layout.addWidget(resolution_label)
+        # Empty slots for alignment
+        stats_layout.addWidget(QLabel(""), 2, 1)
+        stats_layout.addWidget(QLabel(""), 3, 1)
         
-        # Instructions at bottom
-        instructions = QLabel("💡 Click and drag on preview to set Motion ROI")
-        instructions.setStyleSheet("color: #888; font-size: 11px; font-style: italic; margin-top: 5px;")
-        instructions.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        stats_layout.addWidget(instructions)
         
         # Create label references for updates (hidden labels for compatibility)
         self.sensor_resolution_label = QLabel()
@@ -772,7 +793,7 @@ class CameraTab(QWidget):
             self.fps_label.setText("0")
         
         # Update photos and motion events
-        self.photos_motion_label.setText(f"Photos (session): {self.session_capture_count} | Motion Events: {self.motion_event_count}")
+        self.photos_motion_label.setText(f"Photos: {self.session_capture_count} | Events: {self.motion_event_count}")
         
         # Store in hidden labels for compatibility
         self.session_photos_label.setText(str(self.session_capture_count))
@@ -911,6 +932,7 @@ class CameraTab(QWidget):
         self.debounce_value.setText(f"{value}.0s")
         self.camera_controller.debounce_time = value
         logger.info(f"Debounce time set to {value}s")
+    
     
     def load_camera_settings(self):
         """Load camera settings from config"""
@@ -1102,7 +1124,7 @@ class GalleryTab(QWidget):
     def create_thumbnail(self, image_path):
         """Create a thumbnail widget for an image"""
         widget = QWidget()
-        widget.setFixedSize(220, 200)  # Further reduced height
+        widget.setFixedSize(220, 210)  # Adjusted for 4:3 thumbnail
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(3, 3, 3, 3)  # Minimal margins
         layout.setSpacing(1)  # Very tight spacing
@@ -1115,7 +1137,7 @@ class GalleryTab(QWidget):
         
         # Thumbnail label - 4:3 aspect ratio
         label = QLabel()
-        label.setFixedSize(200, 140)  # Slightly smaller height
+        label.setFixedSize(200, 150)  # 4:3 aspect ratio (200 ÷ 150 = 1.33)
         label.setScaledContents(False)  # Don't stretch - maintain aspect ratio
         label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         label.setStyleSheet("""
@@ -2686,7 +2708,8 @@ class MainWindow(QMainWindow):
         current_dir = Path(__file__).parent.name
         self.base_title = f"Bird Detection System - {current_dir}"
         self.setWindowTitle(self.base_title)
-        self.setGeometry(100, 100, 1200, 800)
+        self.setGeometry(100, 100, 1000, 750)  # Locked app size
+        self.setFixedSize(1000, 750)  # Lock app window size
         
         # Clock timer
         self.clock_timer = QTimer()

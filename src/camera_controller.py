@@ -157,7 +157,8 @@ class CameraController:
             cam.setResolution(resolution_map[self.config['resolution']])
             
             if self.config['resolution'] == '12mp':
-                cam.setSensorCrop(0.02662721835076809, 0.14473684132099152)
+                # cam.setSensorCrop(0.02662721835076809, 0.14473684132099152)  # Disabled to see full sensor
+                pass  # Keep the if block valid
             
             # Still encoder
             still_encoder = self.pipeline.create(dai.node.VideoEncoder)
