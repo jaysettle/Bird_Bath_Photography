@@ -77,6 +77,8 @@ Open source - use responsibly for bird conservation and education.
 <img width="999" height="779" alt="image" src="https://github.com/user-attachments/assets/12560abe-4195-4d65-b80c-6f8d6a688dc4" />
 <img width="998" height="778" alt="image" src="https://github.com/user-attachments/assets/350f1a96-21e5-4210-8f9d-9a69c3f45eb4" />
 <img width="997" height="776" alt="image" src="https://github.com/user-attachments/assets/f71e489f-d4d0-474f-932b-366e7632b5e1" />
+<img width="471" height="1028" alt="image" src="https://github.com/user-attachments/assets/052da8aa-1515-4f5c-a728-31b18bddcf2b" />
+<img width="486" height="1041" alt="image" src="https://github.com/user-attachments/assets/94e0b0f6-770c-4a46-9205-caa9b1a2024f" />
 
 
 <img width="1684" height="950" alt="image" src="https://github.com/user-attachments/assets/9b65256a-1bbc-410a-bd42-454ae776ec02" />
