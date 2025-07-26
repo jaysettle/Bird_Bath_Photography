@@ -120,7 +120,9 @@ def is_main_app_running():
     for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
         try:
             cmdline = proc.info.get('cmdline', [])
-            if cmdline and 'main.py' in ' '.join(cmdline) and 'MotionRevamp' in ' '.join(cmdline):
+            cmdline_str = ' '.join(cmdline)
+            # Look for main.py in the bird detection directory
+            if cmdline and 'main.py' in cmdline_str and ('BirdBath' in cmdline_str or 'python' in cmdline_str):
                 return True
         except:
             pass

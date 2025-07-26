@@ -896,7 +896,7 @@ class CameraTab(QWidget):
         logger.info("ROI cleared")
     
     def load_default_roi(self):
-        """Load default ROI from config"""
+        """Load default ROI from config and scale to current preview size"""
         try:
             config_path = os.path.join(os.path.dirname(__file__), 'config.json')
             with open(config_path, 'r') as f:
@@ -904,10 +904,38 @@ class CameraTab(QWidget):
             
             roi_config = config.get('motion_detection', {}).get('default_roi', {})
             if roi_config.get('enabled', False):
-                x = roi_config.get('x', 0)
-                y = roi_config.get('y', 0)
-                width = roi_config.get('width', 600)
-                height = roi_config.get('height', 400)
+                # Original ROI coordinates from config
+                orig_x = roi_config.get('x', 0)
+                orig_y = roi_config.get('y', 0)
+                orig_width = roi_config.get('width', 600)
+                orig_height = roi_config.get('height', 400)
+                
+                # Get current preview dimensions
+                preview_width = 600  # Current fixed preview width
+                preview_height = 400  # Current fixed preview height
+                
+                # Scale ROI coordinates if they extend beyond current preview
+                if orig_x + orig_width > preview_width or orig_y + orig_height > preview_height:
+                    # Calculate scale factor based on the larger dimension that overflows
+                    scale_x = preview_width / (orig_x + orig_width) if orig_x + orig_width > preview_width else 1.0
+                    scale_y = preview_height / (orig_y + orig_height) if orig_y + orig_height > preview_height else 1.0
+                    scale = min(scale_x, scale_y)
+                    
+                    x = int(orig_x * scale)
+                    y = int(orig_y * scale)
+                    width = int(orig_width * scale)
+                    height = int(orig_height * scale)
+                    
+                    logger.info(f"Scaled ROI from ({orig_x}, {orig_y}, {orig_width}x{orig_height}) to ({x}, {y}, {width}x{height})")
+                else:
+                    # Use original coordinates if they fit
+                    x, y, width, height = orig_x, orig_y, orig_width, orig_height
+                
+                # Ensure ROI stays within preview bounds
+                x = max(0, min(x, preview_width - 1))
+                y = max(0, min(y, preview_height - 1))
+                width = min(width, preview_width - x)
+                height = min(height, preview_height - y)
                 
                 # Set ROI in preview label
                 self.preview_label.set_roi_rect(x, y, width, height)
