@@ -44,7 +44,6 @@ The app automatically creates your config.json from the template on first run.
 - Raspberry Pi 5 (4GB+ RAM recommended)
 - OAK-1 Camera (DepthAI compatible)
 - Internet connection
-- OpenAI API key - optional (for bird identification)
 
 ## OAK-1 Camera
 
