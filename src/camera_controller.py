@@ -347,7 +347,10 @@ class CameraController:
                     # Ensure directory exists
                     os.makedirs(self.storage_config['save_dir'], exist_ok=True)
                     
-                    if cv2.imwrite(filename, decoded_frame):
+                    # Add focus point overlay
+                    overlay_frame = self.add_focus_overlay(decoded_frame)
+                    
+                    if cv2.imwrite(filename, overlay_frame):
                         logger.info(f"Saved captured image: {filename}")
                         
                         # Call capture callback if set
@@ -363,6 +366,61 @@ class CameraController:
         except Exception as e:
             logger.error(f"Error getting captured image: {e}")
             return None
+    
+    def add_focus_overlay(self, frame):
+        """Add focus point indicator, datestamp, and depth info to frame"""
+        try:
+            overlay = frame.copy()
+            height, width = overlay.shape[:2]
+            
+            # Add datestamp at the very top left
+            from datetime import datetime
+            current_time = datetime.now()
+            datestamp = current_time.strftime("%Y-%m-%d %H:%M:%S")
+            cv2.putText(overlay, datestamp, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)  # White text
+            
+            # Calculate center point (where focus is typically set)
+            center_x = width // 2
+            center_y = height // 2
+            
+            # Draw focus crosshair
+            cv2.line(overlay, (center_x - 30, center_y), (center_x - 10, center_y), (0, 255, 0), 2)
+            cv2.line(overlay, (center_x + 10, center_y), (center_x + 30, center_y), (0, 255, 0), 2)
+            cv2.line(overlay, (center_x, center_y - 30), (center_x, center_y - 10), (0, 255, 0), 2)
+            cv2.line(overlay, (center_x, center_y + 10), (center_x, center_y + 30), (0, 255, 0), 2)
+            
+            # Draw focus rectangle
+            cv2.rectangle(overlay, (center_x - 50, center_y - 50), (center_x + 50, center_y + 50), (0, 255, 0), 2)
+            
+            # Add focus value text (moved down to make room for datestamp)
+            focus_text = f"Focus: {self.config.get('focus', 'Unknown')}"
+            cv2.putText(overlay, focus_text, (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            
+            # Add hyperfocal distance suggestion
+            # For OAK-1 with f/2.8 aperture, calculate rough hyperfocal distance
+            # Hyperfocal = (focal_length^2) / (aperture * circle_of_confusion)
+            # Assuming 4.74mm focal length, f/2.8, CoC of 0.015mm
+            hyperfocal_mm = (4.74 * 4.74) / (2.8 * 0.015)
+            hyperfocal_m = hyperfocal_mm / 1000
+            
+            cv2.putText(overlay, f"Hyperfocal: ~{hyperfocal_m:.1f}m", (10, 85), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            
+            # Add depth of field indicator (rough estimate)
+            if self.config.get('focus', 0) < 150:
+                dof_text = "DOF: Shallow (Near focus)"
+                cv2.putText(overlay, dof_text, (10, 115), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)  # Orange
+            elif self.config.get('focus', 0) > 180:
+                dof_text = "DOF: Deep (Far focus)"
+                cv2.putText(overlay, dof_text, (10, 115), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)  # Green
+            else:
+                dof_text = "DOF: Medium"
+                cv2.putText(overlay, dof_text, (10, 115), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)  # Yellow
+            
+            return overlay
+            
+        except Exception as e:
+            logger.error(f"Error adding focus overlay: {e}")
+            return frame
     
     def get_device_info(self):
         """Get camera device information"""

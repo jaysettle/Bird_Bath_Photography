@@ -15,6 +15,7 @@ let previewInterval = null;
 const elements = {
     appStatus: document.getElementById('app-status'),
     restartBtn: document.getElementById('restart-btn'),
+    refreshImagesBtn: document.getElementById('refresh-images-btn'),
     cpuStat: document.getElementById('cpu-stat'),
     memoryStat: document.getElementById('memory-stat'),
     diskStat: document.getElementById('disk-stat'),
@@ -36,9 +37,8 @@ document.addEventListener('DOMContentLoaded', () => {
     loadLogs();
     loadCameraSettings();
     
-    // Set up auto-refresh
+    // Set up auto-refresh (but not for images)
     setInterval(loadStats, STATS_REFRESH);
-    setInterval(loadImages, IMAGES_REFRESH);
     setInterval(loadLogs, LOGS_REFRESH);
     
     // Update timestamp every second
@@ -47,6 +47,7 @@ document.addEventListener('DOMContentLoaded', () => {
     
     // Event listeners
     elements.restartBtn.addEventListener('click', restartApp);
+    elements.refreshImagesBtn.addEventListener('click', refreshImages);
     document.querySelector('.close').addEventListener('click', closeModal);
     elements.modal.addEventListener('click', (e) => {
         if (e.target === elements.modal) closeModal();
@@ -112,6 +113,29 @@ async function loadImages() {
     }
 }
 
+// Manual refresh for Recent Captures
+async function refreshImages() {
+    if (!elements.refreshImagesBtn) return;
+    
+    // Add loading state
+    elements.refreshImagesBtn.classList.add('loading');
+    elements.refreshImagesBtn.disabled = true;
+    
+    try {
+        await loadImages();
+        
+        // Show success feedback briefly
+        setTimeout(() => {
+            elements.refreshImagesBtn.classList.remove('loading');
+            elements.refreshImagesBtn.disabled = false;
+        }, 500);
+    } catch (error) {
+        console.error('Error refreshing images:', error);
+        elements.refreshImagesBtn.classList.remove('loading');
+        elements.refreshImagesBtn.disabled = false;
+    }
+}
+
 // Load recent logs
 async function loadLogs() {
     try {
@@ -156,6 +180,13 @@ async function restartApp() {
         const data = await response.json();
         
         if (data.success) {
+            // Show appropriate message based on watchdog management
+            const message = data.watchdog_managed ? 
+                'App stopped - watchdog restarting...' : 
+                'App restarted manually';
+                
+            elements.restartBtn.innerHTML = `<span class="spinner"></span> ${message}`;
+            
             // Wait a bit for the app to restart
             setTimeout(() => {
                 loadStats();
@@ -167,7 +198,7 @@ async function restartApp() {
                     </svg>
                     Restart App
                 `;
-            }, 5000);
+            }, data.watchdog_managed ? 6000 : 4000); // Wait longer for watchdog restarts
         } else {
             throw new Error(data.error || 'Restart failed');
         }

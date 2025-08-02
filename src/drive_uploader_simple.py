@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
-Google Drive Only Uploader - Simplified
+Google Drive Multi-Process Uploader
+Uses worker pool to prevent GUI freezing
 """
 
 import os
 import json
 import time
+import multiprocessing
+import queue
 import threading
-import socket
-import ssl
 from datetime import datetime
 from pathlib import Path
-from queue import Queue, Empty
-from concurrent.futures import ThreadPoolExecutor, TimeoutError
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
+from dataclasses import dataclass
+from typing import Optional, Dict, Any, List
+import logging
 
 # Fix SSL issues
 try:
@@ -22,11 +22,7 @@ try:
     os.environ['SSL_CERT_FILE'] = certifi.where()
     os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
 except ImportError:
-    pass  # certifi not available
-
-# Disable SSL warnings if needed (for debugging)
-import urllib3
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    pass
 
 # Google Drive imports
 try:
@@ -42,381 +38,716 @@ except ImportError:
 
 from .logger import get_logger
 
-logger = get_logger(__name__)
+# Constants
+WORKER_POOL_SIZE = 2  # Max 2 workers to stay under rate limits
+MIN_UPLOAD_DELAY = 0.4  # 400ms between uploads
+MAX_RETRIES = 3
+BACKOFF_BASE = 2
+RATE_LIMIT_COOLDOWN = 60  # seconds to wait after rate limit
+SCOPES = ['https://www.googleapis.com/auth/drive.file']
 
-class DriveUploader:
-    """Google Drive uploader supporting both service account and OAuth2"""
+# Configure multiprocessing logging
+multiprocessing.log_to_stderr(logging.INFO)
+
+@dataclass
+class UploadTask:
+    """Represents a file upload task"""
+    file_path: str
+    task_id: str
+    retry_count: int = 0
     
-    def __init__(self, config):
-        self.config = config['services']['drive_upload']
-        self.storage_config = config['storage']
-        self.enabled = self.config.get('enabled', False) and DRIVE_AVAILABLE
+@dataclass
+class UploadResult:
+    """Result of an upload attempt"""
+    task_id: str
+    success: bool
+    file_path: str
+    error: Optional[str] = None
+    file_id: Optional[str] = None
+
+def worker_process(
+    task_queue: multiprocessing.Queue,
+    result_queue: multiprocessing.Queue,
+    status_queue: multiprocessing.Queue,
+    config: Dict[str, Any],
+    worker_id: int,
+    stop_event: multiprocessing.Event
+):
+    """Worker process that handles file uploads"""
+    # Create logger for this process
+    logger = get_logger(f"DriveWorker-{worker_id}")
+    logger.info(f"Worker {worker_id} starting...")
+    
+    # Initialize Drive service
+    drive_service = None
+    folder_id = None
+    last_upload_time = 0
+    
+    try:
+        # Authenticate and setup
+        logger.info(f"Worker {worker_id}: Authenticating with Google Drive...")
+        drive_service, folder_id = setup_drive_service(config, logger)
+        if not drive_service:
+            logger.error(f"Worker {worker_id}: Failed to setup Drive service")
+            status_queue.put({"worker_id": worker_id, "status": "failed", "error": "Authentication failed"})
+            return
+            
+        logger.info(f"Worker {worker_id}: Ready to process uploads")
+        status_queue.put({"worker_id": worker_id, "status": "ready"})
         
-        # Only support OAuth2 authentication now
-        self.auth_type = 'oauth2'
-        
-        # OAuth2 credential paths only
-        self.client_secret_path = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)), 
-            'client_secret.json'
-        )
-        self.token_path = os.path.join(
+        # Process tasks
+        while not stop_event.is_set():
+            try:
+                # Get task with timeout
+                task = task_queue.get(timeout=1)
+                
+                # Rate limiting
+                time_since_last = time.time() - last_upload_time
+                if time_since_last < MIN_UPLOAD_DELAY:
+                    sleep_time = MIN_UPLOAD_DELAY - time_since_last
+                    logger.debug(f"Worker {worker_id}: Rate limiting, sleeping {sleep_time:.2f}s")
+                    time.sleep(sleep_time)
+                
+                # Upload file
+                logger.info(f"Worker {worker_id}: Uploading {task.file_path}")
+                status_queue.put({
+                    "worker_id": worker_id, 
+                    "status": "uploading", 
+                    "file": os.path.basename(task.file_path)
+                })
+                
+                result = upload_file(drive_service, folder_id, task, logger)
+                last_upload_time = time.time()
+                
+                # Send result
+                result_queue.put(result)
+                
+                if result.success:
+                    logger.info(f"Worker {worker_id}: Successfully uploaded {task.file_path}")
+                    status_queue.put({
+                        "worker_id": worker_id,
+                        "status": "completed",
+                        "file": os.path.basename(task.file_path)
+                    })
+                else:
+                    logger.error(f"Worker {worker_id}: Failed to upload {task.file_path}: {result.error}")
+                    
+                    # Check for rate limit
+                    if "rate limit" in str(result.error).lower() or "429" in str(result.error):
+                        logger.warning(f"Worker {worker_id}: Rate limit hit, cooling down for {RATE_LIMIT_COOLDOWN}s")
+                        status_queue.put({
+                            "worker_id": worker_id,
+                            "status": "rate_limited"
+                        })
+                        time.sleep(RATE_LIMIT_COOLDOWN)
+                        
+                        # Re-queue the task
+                        if task.retry_count < MAX_RETRIES:
+                            task.retry_count += 1
+                            task_queue.put(task)
+                    
+            except queue.Empty:
+                continue
+            except Exception as e:
+                logger.error(f"Worker {worker_id}: Unexpected error: {e}")
+                status_queue.put({
+                    "worker_id": worker_id,
+                    "status": "error",
+                    "error": str(e)
+                })
+                
+    except Exception as e:
+        logger.error(f"Worker {worker_id}: Fatal error: {e}")
+        status_queue.put({
+            "worker_id": worker_id,
+            "status": "crashed",
+            "error": str(e)
+        })
+    finally:
+        logger.info(f"Worker {worker_id} shutting down")
+
+def setup_drive_service(config: Dict[str, Any], logger):
+    """Setup Google Drive service with OAuth2"""
+    try:
+        # Paths
+        token_path = os.path.join(
             os.path.dirname(os.path.dirname(__file__)), 
             'token.json'
         )
-        
-        # Drive service
-        self.drive_service = None
-        self.folder_id = None
-        
-        # Upload queue
-        self.upload_queue = Queue()
-        self.upload_thread = None
-        self.running = False
-        
-        # Tracking
-        self.uploaded_files = set()
-        self.upload_log = os.path.join(self.storage_config['save_dir'], 'drive_uploads.json')
-        
-        if not self.enabled:
-            logger.warning("Google Drive upload disabled or dependencies missing")
-            return
-        
-        logger.info("Drive uploader initialized")
-    
-    def start(self):
-        """Start the drive upload service"""
-        if not self.enabled:
-            return False
-        
-        try:
-            # Try to authenticate but don't fail if it doesn't work
-            if not self._authenticate():
-                logger.warning("Drive authentication failed - service will run in offline mode")
-                self.enabled = False
-                return False
-            
-            if not self._setup_folder():
-                logger.warning("Drive folder setup failed - service will run in offline mode")
-                self.enabled = False
-                return False
-            
-            self._load_upload_log()
-            
-            self.running = True
-            self.upload_thread = threading.Thread(target=self._upload_worker, daemon=True)
-            self.upload_thread.start()
-            
-            logger.info("Drive upload service started")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Drive service start failed (non-fatal): {e}")
-            self.enabled = False
-            # Return False but don't crash the app
-            return False
-    
-    def stop(self):
-        """Stop the drive upload service"""
-        self.running = False
-        if self.upload_thread:
-            self.upload_thread.join(timeout=5)
-        logger.info("Drive upload service stopped")
-    
-    def _authenticate(self):
-        """Authenticate with Google Drive API using OAuth2 only"""
-        try:
-            return self._authenticate_oauth2()
-        except Exception as e:
-            logger.error(f"Failed to authenticate with Google Drive: {e}")
-            return False
-    
-    def _authenticate_oauth2(self):
-        """Authenticate using OAuth2 for personal account"""
-        SCOPES = ['https://www.googleapis.com/auth/drive.file']
-        creds = None
-        
-        # Token file stores the user's access and refresh tokens
-        if os.path.exists(self.token_path):
-            creds = Credentials.from_authorized_user_file(self.token_path, SCOPES)
-        
-        # If there are no (valid) credentials available, let the user log in
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-            else:
-                if not os.path.exists(self.client_secret_path):
-                    logger.error(f"OAuth2 client credentials not found: {self.client_secret_path}")
-                    logger.error("Please download OAuth2 credentials from Google Cloud Console")
-                    return False
-                
-                flow = InstalledAppFlow.from_client_secrets_file(
-                    self.client_secret_path, SCOPES)
-                creds = flow.run_local_server(port=0)
-            
-            # Save the credentials for the next run
-            with open(self.token_path, 'w') as token:
-                token.write(creds.to_json())
-        
-        # Create httplib2 instance with timeout and SSL fixes
-        http = httplib2.Http(
-            timeout=10,  # 10 second timeout
-            disable_ssl_certificate_validation=False,  # Keep SSL validation
-            ca_certs=certifi.where() if 'certifi' in globals() else None
+        client_secret_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), 
+            'client_secret.json'
         )
-        authorized_http = creds.authorize(http) if hasattr(creds, 'authorize') else http
         
-        # For newer credentials, we pass them directly
-        if hasattr(creds, 'authorize'):
-            self.drive_service = build('drive', 'v3', http=authorized_http)
+        # Load credentials
+        creds = None
+        if os.path.exists(token_path):
+            creds = Credentials.from_authorized_user_file(token_path, SCOPES)
+            
+        # Refresh if needed
+        if creds and creds.expired and creds.refresh_token:
+            logger.info("Refreshing expired credentials")
+            creds.refresh(Request())
+            
+        if not creds or not creds.valid:
+            logger.error("No valid credentials available")
+            return None, None
+            
+        # Build service
+        service = build('drive', 'v3', credentials=creds)
+        
+        # Get or create folder
+        folder_name = config['services']['drive_upload']['folder_name']
+        folder_id = get_or_create_folder(service, folder_name, logger)
+        
+        return service, folder_id
+        
+    except Exception as e:
+        logger.error(f"Failed to setup Drive service: {e}")
+        return None, None
+
+def get_or_create_folder(service, folder_name: str, logger):
+    """Get existing folder or create new one"""
+    try:
+        # Search for existing folder
+        query = f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and 'me' in owners and trashed=false"
+        results = service.files().list(q=query, spaces='drive', fields='files(id, name)').execute()
+        folders = results.get('files', [])
+        
+        if folders:
+            folder_id = folders[0]['id']
+            logger.info(f"Found existing folder: {folder_name} (ID: {folder_id})")
+            return folder_id
         else:
-            self.drive_service = build('drive', 'v3', credentials=creds)
-        logger.info("Google Drive OAuth2 authentication successful")
-        return True
-    
-    def _setup_folder(self):
-        """Setup or find the upload folder in personal Drive"""
-        try:
-            folder_name = self.config['folder_name']
+            # Create new folder
+            folder_metadata = {
+                'name': folder_name,
+                'mimeType': 'application/vnd.google-apps.folder'
+            }
+            folder = service.files().create(body=folder_metadata, fields='id').execute()
+            folder_id = folder.get('id')
+            logger.info(f"Created new folder: {folder_name} (ID: {folder_id})")
+            return folder_id
             
-            # Search for existing folder in user's personal Drive
-            query = f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and 'me' in owners and trashed=false"
+    except Exception as e:
+        logger.error(f"Failed to get/create folder: {e}")
+        return None
+
+def upload_file(service, folder_id: str, task: UploadTask, logger) -> UploadResult:
+    """Upload a single file to Drive"""
+    try:
+        if not os.path.exists(task.file_path):
+            return UploadResult(
+                task_id=task.task_id,
+                success=False,
+                file_path=task.file_path,
+                error="File not found"
+            )
             
-            results = self.drive_service.files().list(
-                q=query,
-                spaces='drive',
-                fields='files(id, name)'
-            ).execute()
-            
-            folders = results.get('files', [])
-            
-            if folders:
-                self.folder_id = folders[0]['id']
-                logger.info(f"Found existing folder in personal Drive: {folder_name}")
-            else:
-                # Create new folder in personal Drive
-                folder_metadata = {
-                    'name': folder_name,
-                    'mimeType': 'application/vnd.google-apps.folder'
-                }
-                
-                folder = self.drive_service.files().create(
-                    body=folder_metadata,
-                    fields='id'
-                ).execute()
-                
-                self.folder_id = folder.get('id')
-                logger.info(f"Created new folder in personal Drive: {folder_name}")
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to setup Drive folder: {e}")
-            return False
-    
-    def _upload_worker(self):
-        """Background worker for uploading files"""
-        last_reenable_check = 0
-        consecutive_failures = 0
-        max_backoff = 60  # Maximum backoff time in seconds
+        filename = os.path.basename(task.file_path)
         
-        while self.running:
-            try:
-                file_path = self.upload_queue.get(timeout=1)
-                if file_path is None:
-                    break
-                
-                # Try to re-enable service if disabled (check every 5 minutes)
-                current_time = time.time()
-                if not self.enabled and current_time - last_reenable_check > 300:
-                    self.test_and_reenable()
-                    last_reenable_check = current_time
-                
-                if self.enabled:
-                    success = self._upload_file(file_path)
-                    if success:
-                        self.uploaded_files.add(file_path)
-                        self._save_upload_log()
-                        consecutive_failures = 0  # Reset on success
-                    else:
-                        consecutive_failures += 1
-                        # Exponential backoff: 2^failures seconds, capped at max_backoff
-                        backoff_time = min(2 ** consecutive_failures, max_backoff)
-                        logger.info(f"Upload failed, backing off for {backoff_time}s")
-                        time.sleep(backoff_time)
-                        # Re-queue the file for retry
-                        self.upload_queue.put(file_path)
-                
-                # Rate limiting
-                time.sleep(self.config.get('upload_delay', 3))
-                
-            except Empty:
-                continue
-            except Exception as e:
-                logger.error(f"Error in drive upload worker: {e}")
-                consecutive_failures += 1
-    
-    def _upload_file(self, file_path):
-        """Upload a single file to Google Drive with timeout"""
-        try:
-            if not os.path.exists(file_path):
-                logger.warning(f"File not found for upload: {file_path}")
-                return False
-            
-            filename = os.path.basename(file_path)
-            
-            # Check if already uploaded
-            if file_path in self.uploaded_files:
-                logger.debug(f"File already uploaded: {filename}")
-                return True
-            
-            # Use ThreadPoolExecutor for timeout control
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(self._do_upload, file_path, filename)
-                try:
-                    # Wait maximum 30 seconds for upload
-                    result = future.result(timeout=30)
-                    if result:
-                        logger.info(f"Uploaded to Drive: {filename}")
-                    return result
-                except TimeoutError:
-                    logger.error(f"Upload timed out for {filename}")
-                    return False
-                except Exception as e:
-                    raise  # Re-raise to be handled by outer exception handler
-            
-        except Exception as e:
-            error_str = str(e)
-            
-            # Handle quota exceeded error specifically
-            if "storageQuotaExceeded" in error_str:
-                logger.error("Google Drive storage quota exceeded! Upload failed, but service remains enabled.")
-                # Don't disable the service - just report the error
-                # The service will try again with the next file
-                return False
-            
-            # Handle SSL/network errors
-            if "SSL" in error_str or "DECRYPTION_FAILED" in error_str:
-                logger.warning(f"Network/SSL error uploading {file_path}: {e}")
-                # These are usually temporary - retry on next file
-                return False
-            
-            # Handle other network errors
-            if "ConnectionError" in error_str or "TimeoutError" in error_str:
-                logger.warning(f"Network timeout uploading {file_path}: {e}")
-                return False
-            
-            logger.error(f"Failed to upload {file_path}: {e}")
-            return False
-    
-    def _do_upload(self, file_path, filename):
-        """Internal method to do the actual upload (called in thread)"""
-        # Check if file exists in Drive
-        results = self.drive_service.files().list(
-            q=f"name='{filename}' and parents in '{self.folder_id}'",
-            spaces='drive'
-        ).execute()
+        # Check if file already exists
+        query = f"name='{filename}' and '{folder_id}' in parents and trashed=false"
+        results = service.files().list(q=query, spaces='drive', fields='files(id)').execute()
+        existing = results.get('files', [])
         
-        if results.get('files', []):
+        if existing:
             logger.debug(f"File already exists in Drive: {filename}")
-            return True
+            return UploadResult(
+                task_id=task.task_id,
+                success=True,
+                file_path=task.file_path,
+                file_id=existing[0]['id']
+            )
         
         # Upload file
         file_metadata = {
             'name': filename,
-            'parents': [self.folder_id]
+            'parents': [folder_id]
         }
         
-        media = MediaFileUpload(file_path, resumable=True)
-        
-        file = self.drive_service.files().create(
+        media = MediaFileUpload(task.file_path, resumable=True)
+        file = service.files().create(
             body=file_metadata,
             media_body=media,
             fields='id'
         ).execute()
         
-        return True
+        return UploadResult(
+            task_id=task.task_id,
+            success=True,
+            file_path=task.file_path,
+            file_id=file.get('id')
+        )
+        
+    except Exception as e:
+        error_str = str(e)
+        logger.error(f"Upload failed for {task.file_path}: {error_str}")
+        
+        return UploadResult(
+            task_id=task.task_id,
+            success=False,
+            file_path=task.file_path,
+            error=error_str
+        )
+
+class DriveUploader:
+    """Multi-process Google Drive uploader"""
     
-    def queue_file(self, file_path):
-        """Queue a file for upload"""
+    def __init__(self, config):
+        self.config = config
+        self.enabled = config['services']['drive_upload'].get('enabled', False) and DRIVE_AVAILABLE
+        self.logger = get_logger(__name__)
+        
+        # Multiprocessing components
+        self.manager = multiprocessing.Manager()
+        self.task_queue = self.manager.Queue()
+        self.result_queue = self.manager.Queue()
+        self.status_queue = self.manager.Queue()
+        self.stop_event = self.manager.Event()
+        
+        # Worker pool
+        self.workers = []
+        self.monitor_thread = None
+        self.scanner_thread = None
+        self.running = False
+        
+        # Periodic scan settings
+        self.scan_interval = 600  # 10 minutes
+        self.scan_stop_event = threading.Event()
+        
+        # Cleanup settings
+        self.cleanup_time = config['services']['drive_upload'].get('cleanup_time', '23:30')
+        self.max_size_gb = config['services']['drive_upload'].get('max_size_gb', 2)
+        self.cleanup_thread = None
+        self.cleanup_stop_event = threading.Event()
+        
+        # Upload tracking
+        self.upload_log = os.path.join(
+            config['storage']['save_dir'], 
+            'drive_uploads.json'
+        )
+        self.uploaded_files = set()
+        self._load_upload_log()
+        
+        # Task tracking
+        self.pending_tasks = {}
+        self.task_counter = 0
+        
+        # Stats
+        self.stats = {
+            'queued': 0,
+            'uploading': 0,
+            'completed': 0,
+            'failed': 0,
+            'rate_limited': 0
+        }
+        
+        if not self.enabled:
+            self.logger.warning("Google Drive upload disabled or dependencies missing")
+            
+        self.logger.info("Multi-process Drive uploader initialized")
+    
+    def start(self):
+        """Start the upload service"""
+        if not self.enabled:
+            return False
+            
         try:
-            if self.enabled and self.running:
-                self.upload_queue.put(file_path)
-                logger.debug(f"Queued for Drive upload: {os.path.basename(file_path)}")
+            self.logger.info("Starting Drive upload service...")
+            self.running = True
+            self.stop_event.clear()
+            
+            # Start worker processes
+            for i in range(WORKER_POOL_SIZE):
+                worker = multiprocessing.Process(
+                    target=worker_process,
+                    args=(
+                        self.task_queue,
+                        self.result_queue,
+                        self.status_queue,
+                        self.config,
+                        i,
+                        self.stop_event
+                    )
+                )
+                worker.start()
+                self.workers.append(worker)
+                self.logger.info(f"Started worker process {i} (PID: {worker.pid})")
+            
+            # Start monitor thread
+            self.monitor_thread = threading.Thread(target=self._monitor_workers, daemon=True)
+            self.monitor_thread.start()
+            
+            # Start scanner thread
+            self.scan_stop_event.clear()
+            self.scanner_thread = threading.Thread(target=self._periodic_scanner, daemon=True)
+            self.scanner_thread.start()
+            
+            # Start cleanup scheduler thread
+            self.cleanup_stop_event.clear()
+            self.cleanup_thread = threading.Thread(target=self._cleanup_scheduler, daemon=True)
+            self.cleanup_thread.start()
+            
+            # Do initial scan
+            threading.Thread(target=self.scan_now, daemon=True).start()
+            
+            self.logger.info("Drive upload service started successfully with periodic scanning and cleanup")
+            return True
+            
         except Exception as e:
-            logger.error(f"Failed to queue file (non-fatal): {e}")
-            # Don't crash - just skip the upload
+            self.logger.error(f"Failed to start Drive service: {e}")
+            self.enabled = False
+            return False
+    
+    def stop(self):
+        """Stop the upload service"""
+        self.logger.info("Stopping Drive upload service...")
+        self.running = False
+        self.stop_event.set()
+        self.scan_stop_event.set()
+        self.cleanup_stop_event.set()
+        
+        # Wait for scanner thread to finish
+        if self.scanner_thread and self.scanner_thread.is_alive():
+            self.scanner_thread.join(timeout=2)
+        
+        # Wait for cleanup thread to finish
+        if self.cleanup_thread and self.cleanup_thread.is_alive():
+            self.cleanup_thread.join(timeout=2)
+        
+        # Wait for workers to finish
+        for worker in self.workers:
+            worker.join(timeout=5)
+            if worker.is_alive():
+                self.logger.warning(f"Force terminating worker {worker.pid}")
+                worker.terminate()
+                
+        self.workers.clear()
+        
+        # Save upload log
+        self._save_upload_log()
+        
+        self.logger.info("Drive upload service stopped")
+    
+    def queue_file(self, file_path: str):
+        """Queue a file for upload"""
+        if not self.enabled or not self.running:
+            return
+            
+        # Check if already uploaded
+        if file_path in self.uploaded_files:
+            self.logger.debug(f"File already uploaded: {file_path}")
+            return
+            
+        # Create task
+        self.task_counter += 1
+        task = UploadTask(
+            file_path=file_path,
+            task_id=f"task_{self.task_counter}"
+        )
+        
+        # Add to queue
+        self.task_queue.put(task)
+        self.pending_tasks[task.task_id] = task
+        self.stats['queued'] += 1
+        
+        self.logger.info(f"Queued file for upload: {os.path.basename(file_path)}")
+    
+    def _monitor_workers(self):
+        """Monitor worker status and results"""
+        while self.running:
+            try:
+                # Check results
+                try:
+                    result = self.result_queue.get_nowait()
+                    self._handle_result(result)
+                except queue.Empty:
+                    pass
+                
+                # Check status updates
+                try:
+                    status = self.status_queue.get_nowait()
+                    self._handle_status(status)
+                except queue.Empty:
+                    pass
+                
+                time.sleep(0.1)
+                
+            except Exception as e:
+                self.logger.error(f"Monitor thread error: {e}")
+    
+    def _handle_result(self, result: UploadResult):
+        """Handle upload result"""
+        if result.task_id in self.pending_tasks:
+            del self.pending_tasks[result.task_id]
+            
+        if result.success:
+            self.uploaded_files.add(result.file_path)
+            self.stats['completed'] += 1
+            self.logger.info(f"Upload completed: {os.path.basename(result.file_path)}")
+        else:
+            self.stats['failed'] += 1
+            self.logger.error(f"Upload failed: {os.path.basename(result.file_path)} - {result.error}")
+    
+    def _handle_status(self, status: Dict[str, Any]):
+        """Handle worker status update"""
+        worker_id = status.get('worker_id', -1)
+        status_type = status.get('status', 'unknown')
+        
+        self.logger.debug(f"Worker {worker_id} status: {status_type}")
+        
+        if status_type == 'uploading':
+            self.stats['uploading'] += 1
+        elif status_type == 'rate_limited':
+            self.stats['rate_limited'] += 1
+        elif status_type == 'error':
+            self.logger.error(f"Worker {worker_id} error: {status.get('error', 'Unknown')}")
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Get current statistics"""
+        return {
+            'enabled': self.enabled,
+            'running': self.running,
+            'workers': len(self.workers),
+            'queue_size': self.task_queue.qsize() if self.running else 0,
+            'stats': self.stats.copy(),
+            'uploaded_count': len(self.uploaded_files)
+        }
     
     def _load_upload_log(self):
-        """Load upload log"""
+        """Load previously uploaded files"""
         try:
             if os.path.exists(self.upload_log):
                 with open(self.upload_log, 'r') as f:
                     data = json.load(f)
                     self.uploaded_files = set(data.get('uploaded_files', []))
-                logger.info(f"Loaded {len(self.uploaded_files)} uploaded files from log")
+                    self.logger.info(f"Loaded {len(self.uploaded_files)} uploaded files from log")
         except Exception as e:
-            logger.error(f"Error loading upload log: {e}")
+            self.logger.error(f"Error loading upload log: {e}")
     
     def _save_upload_log(self):
-        """Save upload log"""
+        """Save uploaded files list"""
         try:
-            data = {
-                'uploaded_files': list(self.uploaded_files),
-                'last_updated': datetime.now().isoformat()
-            }
             with open(self.upload_log, 'w') as f:
-                json.dump(data, f, indent=2)
+                json.dump({
+                    'uploaded_files': list(self.uploaded_files),
+                    'last_saved': datetime.now().isoformat()
+                }, f, indent=2)
         except Exception as e:
-            logger.error(f"Error saving upload log: {e}")
+            self.logger.error(f"Error saving upload log: {e}")
     
-    def get_queue_size(self):
-        """Get current upload queue size"""
-        return self.upload_queue.qsize()
-    
-    def check_drive_quota(self):
-        """Check Drive storage quota"""
-        try:
-            about = self.drive_service.about().get(fields='storageQuota').execute()
-            quota = about.get('storageQuota', {})
-            
-            usage = int(quota.get('usage', 0))
-            limit = int(quota.get('limit', 0))
-            
-            if limit > 0:
-                usage_percent = (usage / limit) * 100
-                free_gb = (limit - usage) / (1024**3)
-                logger.info(f"Drive storage: {usage_percent:.1f}% used ({usage / (1024**3):.1f}GB / {limit / (1024**3):.1f}GB), {free_gb:.1f}GB free")
+    def _periodic_scanner(self):
+        """Periodically scan for new files to upload"""
+        self.logger.info(f"Starting periodic file scanner (every {self.scan_interval/60:.0f} minutes)")
+        
+        while self.running and not self.scan_stop_event.is_set():
+            try:
+                # Wait for scan interval (10 minutes) but check stop event frequently
+                for _ in range(self.scan_interval):
+                    if self.scan_stop_event.wait(1):  # Check every second
+                        return
+                    if not self.running:
+                        return
                 
-                # Allow uploads if we have at least 100MB free space
-                if free_gb < 0.1:
-                    logger.warning(f"Drive storage nearly full - only {free_gb:.1f}GB free")
-                    return False
-                    
-            return True
+                if not self.enabled:
+                    continue
+                
+                self.logger.info("Periodic scan: checking for new files...")
+                self.scan_now()
+                
+            except Exception as e:
+                self.logger.error(f"Error in periodic scanner: {e}")
+    
+    def scan_now(self):
+        """Scan for new files to upload"""
+        if not self.enabled or not self.running:
+            return
+            
+        self.logger.info("Scanning for new files...")
+        
+        try:
+            save_dir = Path(self.config['storage']['save_dir'])
+            image_extensions = ('.jpg', '.jpeg', '.png')
+            
+            new_count = 0
+            for ext in image_extensions:
+                for file_path in save_dir.glob(f'*{ext}'):
+                    if str(file_path) not in self.uploaded_files:
+                        self.queue_file(str(file_path))
+                        new_count += 1
+                        
+                for file_path in save_dir.glob(f'*{ext.upper()}'):
+                    if str(file_path) not in self.uploaded_files:
+                        self.queue_file(str(file_path))
+                        new_count += 1
+                        
+            self.logger.info(f"Found {new_count} new files to upload")
             
         except Exception as e:
-            logger.error(f"Failed to check Drive quota: {e}")
-            return True  # Assume OK if we can't check
+            self.logger.error(f"Error scanning for files: {e}")
     
-    def test_and_reenable(self):
-        """Test Drive access and re-enable if quota is available"""
-        if not self.enabled:
-            logger.info("Drive upload is disabled, checking if it can be re-enabled...")
-            if self.check_drive_quota():
-                self.enabled = True
-                logger.info("Drive upload re-enabled - quota available")
-                return True
-            else:
-                logger.warning("Drive upload remains disabled - quota still exceeded")
-                return False
-        return True
+    def _cleanup_scheduler(self):
+        """Daily cleanup scheduler"""
+        self.logger.info(f"Starting Google Drive cleanup scheduler (daily at {self.cleanup_time})")
+        
+        while self.running and not self.cleanup_stop_event.is_set():
+            try:
+                # Parse cleanup time
+                hour, minute = map(int, self.cleanup_time.split(':'))
+                
+                # Wait until cleanup time each day
+                import datetime
+                now = datetime.datetime.now()
+                cleanup_today = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                
+                # If cleanup time has passed today, schedule for tomorrow
+                if now >= cleanup_today:
+                    cleanup_today += datetime.timedelta(days=1)
+                
+                # Calculate seconds until cleanup
+                seconds_until_cleanup = (cleanup_today - now).total_seconds()
+                
+                self.logger.info(f"Next Google Drive cleanup scheduled for {cleanup_today.strftime('%Y-%m-%d %H:%M')}")
+                
+                # Wait until cleanup time (check every minute for stop signal)
+                for _ in range(int(seconds_until_cleanup // 60)):
+                    if self.cleanup_stop_event.wait(60):  # Check every minute
+                        return
+                    if not self.running:
+                        return
+                
+                # Wait remaining seconds
+                remaining_seconds = seconds_until_cleanup % 60
+                if remaining_seconds > 0:
+                    if self.cleanup_stop_event.wait(remaining_seconds):
+                        return
+                    if not self.running:
+                        return
+                
+                # Execute cleanup
+                if self.enabled:
+                    self.logger.info("Starting Google Drive cleanup...")
+                    self._cleanup_drive_folder()
+                
+            except Exception as e:
+                self.logger.error(f"Error in cleanup scheduler: {e}")
+                # Wait 1 hour before retrying
+                if self.cleanup_stop_event.wait(3600):
+                    return
     
-    def get_drive_folder_stats(self):
-        """Get statistics about the Google Drive folder with timeout"""
+    def _cleanup_drive_folder(self):
+        """Clean up Google Drive folder to respect max size limit"""
         try:
-            if not self.drive_service or not self.folder_id:
-                logger.debug(f"Cannot get stats - service: {self.drive_service is not None}, folder_id: {self.folder_id}")
+            # Get folder stats
+            stats = self._fetch_drive_stats()
+            current_size_gb = stats['total_size'] / (1024**3)
+            
+            self.logger.info(f"Current Drive folder size: {current_size_gb:.2f} GB, limit: {self.max_size_gb} GB")
+            
+            if current_size_gb <= self.max_size_gb:
+                self.logger.info("Drive folder within size limit - no cleanup needed")
+                return
+            
+            # Need to cleanup - delete oldest files first
+            self.logger.info(f"Drive folder exceeds limit by {current_size_gb - self.max_size_gb:.2f} GB - starting cleanup")
+            
+            # Get all files sorted by creation time (oldest first)
+            files = self._get_drive_files_sorted_by_date()
+            
+            if not files:
+                self.logger.warning("No files found in Drive folder for cleanup")
+                return
+            
+            # Calculate target size to clean up to 90% of limit to avoid frequent cleanups
+            target_size_gb = self.max_size_gb * 0.9
+            size_to_delete_gb = current_size_gb - target_size_gb
+            
+            deleted_count = 0
+            deleted_size = 0
+            
+            for file_info in files:
+                if deleted_size >= size_to_delete_gb * (1024**3):
+                    break
+                
+                try:
+                    # Delete file from Drive
+                    self._delete_drive_file(file_info['id'], file_info['name'])
+                    
+                    # Remove from upload tracking
+                    local_path = self._find_local_file_path(file_info['name'])
+                    if local_path and local_path in self.uploaded_files:
+                        self.uploaded_files.remove(local_path)
+                    
+                    deleted_size += int(file_info.get('size', 0))
+                    deleted_count += 1
+                    
+                    self.logger.info(f"Deleted from Drive: {file_info['name']} ({file_info.get('size', 0)} bytes)")
+                    
+                except Exception as e:
+                    self.logger.error(f"Failed to delete {file_info['name']}: {e}")
+            
+            # Save updated upload log
+            self._save_upload_log()
+            
+            self.logger.info(f"Cleanup completed: deleted {deleted_count} files ({deleted_size / (1024**3):.2f} GB)")
+            
+        except Exception as e:
+            self.logger.error(f"Error during Drive cleanup: {e}")
+    
+    def _get_drive_files_sorted_by_date(self):
+        """Get all files in Drive folder sorted by creation date (oldest first)"""
+        try:
+            # Get folder ID
+            drive_service, folder_id = setup_drive_service(self.config, self.logger)
+            if not drive_service or not folder_id:
+                return []
+            
+            # Get all files in the folder
+            results = drive_service.files().list(
+                q=f"parents in '{folder_id}' and trashed=false",
+                fields="files(id,name,size,createdTime,modifiedTime)",
+                orderBy="createdTime",
+                pageSize=1000
+            ).execute()
+            
+            files = results.get('files', [])
+            return files
+            
+        except Exception as e:
+            self.logger.error(f"Error getting Drive files for cleanup: {e}")
+            return []
+    
+    def _delete_drive_file(self, file_id, filename):
+        """Delete a file from Google Drive"""
+        try:
+            drive_service, _ = setup_drive_service(self.config, self.logger)
+            if not drive_service:
+                raise Exception("Could not get Drive service")
+            
+            drive_service.files().delete(fileId=file_id).execute()
+            self.logger.debug(f"Successfully deleted {filename} from Drive")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to delete {filename} from Drive: {e}")
+            raise
+    
+    def _find_local_file_path(self, filename):
+        """Find the local path for a filename"""
+        try:
+            save_dir = Path(self.config['storage']['save_dir'])
+            for file_path in save_dir.glob(filename):
+                return str(file_path)
+            return None
+        except Exception:
+            return None
+    
+    def _fetch_drive_stats(self):
+        """Fetch Drive folder statistics"""
+        try:
+            # Get folder ID
+            drive_service, folder_id = setup_drive_service(self.config, self.logger)
+            if not drive_service or not folder_id:
                 return {
                     'file_count': 0,
                     'total_size': 0,
@@ -424,47 +755,23 @@ class DriveUploader:
                     'latest_upload_time': None
                 }
             
-            # Use ThreadPoolExecutor for timeout control
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(self._fetch_drive_stats)
-                try:
-                    # Wait maximum 5 seconds for the API call
-                    return future.result(timeout=5)
-                except TimeoutError:
-                    logger.warning("Drive stats request timed out")
-                    return self._get_cached_stats()
-                except Exception as e:
-                    logger.error(f"Error fetching drive stats: {e}")
-                    return self._get_cached_stats()
-                    
-        except Exception as e:
-            logger.error(f"Failed to get Drive folder stats: {e}")
-            return self._get_cached_stats()
-    
-    def _fetch_drive_stats(self):
-        """Internal method to fetch drive stats (called in thread)"""
-        try:
             # Get all files in the folder
-            results = self.drive_service.files().list(
-                q=f"parents in '{self.folder_id}' and trashed=false",
+            results = drive_service.files().list(
+                q=f"parents in '{folder_id}' and trashed=false",
                 fields="files(id,name,size,createdTime,modifiedTime)",
                 pageSize=1000
             ).execute()
-        except Exception as e:
-            # Return cached stats on error
-            logger.debug(f"Error fetching drive stats, using cache: {str(e)}")
-            return self._get_cached_stats()
         
-        files = results.get('files', [])
-        
-        if not files:
-            stats = {
-                'file_count': 0,
-                'total_size': 0,
-                'latest_file': None,
-                'latest_upload_time': None
-            }
-        else:
+            files = results.get('files', [])
+            
+            if not files:
+                return {
+                    'file_count': 0,
+                    'total_size': 0,
+                    'latest_file': None,
+                    'latest_upload_time': None
+                }
+            
             # Calculate total size
             total_size = 0
             latest_file = None
@@ -481,148 +788,77 @@ class DriveUploader:
                     latest_time = file_time
                     latest_file = file['name']
             
-            stats = {
+            return {
                 'file_count': len(files),
                 'total_size': total_size,
                 'latest_file': latest_file,
                 'latest_upload_time': latest_time
             }
-        
-        # Cache the stats
-        self._cached_stats = stats
-        self._cache_time = time.time()
-        logger.debug(f"Fetched Drive stats: {stats['file_count']} files, {stats['total_size'] / (1024**2):.1f} MB")
-        return stats
-    
-    def _get_cached_stats(self):
-        """Return cached stats if available, otherwise empty stats"""
-        if hasattr(self, '_cached_stats') and hasattr(self, '_cache_time'):
-            # Use cache if less than 30 seconds old
-            if time.time() - self._cache_time < 30:
-                return self._cached_stats
-        
-        return {
-            'file_count': 0,
-            'total_size': 0,
-            'latest_file': None,
-            'latest_upload_time': None
-        }
-    
-    def get_drive_folder_url(self):
-        """Get the URL to the Google Drive folder"""
-        if self.folder_id:
-            return f"https://drive.google.com/drive/folders/{self.folder_id}"
-        return None
-    
-    def clear_drive_folder(self):
-        """Clear all files from the Google Drive folder"""
-        try:
-            if not self.drive_service or not self.folder_id:
-                return False
-                
-            # Get all files in the folder
-            results = self.drive_service.files().list(
-                q=f"parents in '{self.folder_id}' and trashed=false",
-                fields="files(id,name)"
-            ).execute()
-            
-            files = results.get('files', [])
-            
-            if not files:
-                logger.info("No files to delete from Drive folder")
-                return True
-            
-            # Delete all files
-            deleted_count = 0
-            for file in files:
-                try:
-                    self.drive_service.files().delete(fileId=file['id']).execute()
-                    deleted_count += 1
-                    logger.info(f"Deleted from Drive: {file['name']}")
-                except Exception as e:
-                    logger.error(f"Failed to delete {file['name']}: {e}")
-            
-            logger.info(f"Cleared {deleted_count} files from Drive folder")
-            return True
             
         except Exception as e:
-            logger.error(f"Failed to clear Drive folder: {e}")
-            return False
-
-class FileWatcher(FileSystemEventHandler):
-    """Watch for new image files"""
+            self.logger.error(f"Error fetching Drive stats: {e}")
+            return {
+                'file_count': 0,
+                'total_size': 0,
+                'latest_file': None,
+                'latest_upload_time': None
+            }
     
-    def __init__(self, drive_uploader):
-        self.drive_uploader = drive_uploader
-        
-    def on_created(self, event):
-        """Handle new file creation"""
-        if event.is_directory:
-            return
-        
-        file_path = event.src_path
-        
-        # Check if it's an image file
-        if file_path.lower().endswith(('.jpg', '.jpeg', '.png')):
-            logger.info(f"New image detected: {os.path.basename(file_path)}")
+    # Stub methods for compatibility
+    def get_drive_folder_stats(self):
+        """Get folder statistics"""
+        try:
+            if not self.enabled or not self.running:
+                return {
+                    'file_count': 0,
+                    'total_size': 0,
+                    'latest_file': None,
+                    'latest_upload_time': None
+                }
             
-            # Queue for Drive upload
-            if self.drive_uploader:
-                self.drive_uploader.queue_file(file_path)
+            # Use the existing fetch method
+            return self._fetch_drive_stats()
+            
+        except Exception as e:
+            self.logger.error(f"Error getting Drive folder stats: {e}")
+            return {
+                'file_count': 0,
+                'total_size': 0,
+                'latest_file': None,
+                'latest_upload_time': None
+            }
+    
+    def get_queue_size(self):
+        """Get current queue size"""
+        return self.task_queue.qsize() if self.running else 0
+    
+    def clear_drive_folder(self):
+        """Clear drive folder (not implemented in multiprocess version)"""
+        self.logger.warning("Clear drive folder not implemented in multiprocess version")
+        return False
+    
+    def get_drive_folder_url(self):
+        """Get drive folder URL (stub)"""
+        return "https://drive.google.com"
 
 class CombinedUploader:
-    """Drive uploader service"""
+    """Combined uploader for compatibility"""
     
     def __init__(self, config):
         self.config = config
-        self.storage_config = config['storage']
-        
-        # Create uploader
         self.drive_uploader = DriveUploader(config) if DRIVE_AVAILABLE else None
+        self.logger = get_logger(__name__)
         
-        # File watcher
-        self.observer = None
-        self.file_watcher = FileWatcher(self.drive_uploader)
-        
-        logger.info("Drive uploader initialized")
-    
     def start(self):
         """Start upload service"""
-        success = True
-        
-        # Start Drive uploader
         if self.drive_uploader:
-            drive_success = self.drive_uploader.start()
-            if not drive_success:
-                logger.warning("Drive uploader failed to start")
-        
-        # Start file watcher if Drive uploader is working
-        if self.drive_uploader:
-            try:
-                self.observer = Observer()
-                self.observer.schedule(
-                    self.file_watcher,
-                    self.storage_config['save_dir'],
-                    recursive=False
-                )
-                self.observer.start()
-                logger.info("File watcher started")
-            except Exception as e:
-                logger.error(f"Failed to start file watcher: {e}")
-                success = False
-        
-        return success
+            return self.drive_uploader.start()
+        return False
     
     def stop(self):
         """Stop upload service"""
-        if self.observer:
-            self.observer.stop()
-            self.observer.join()
-        
         if self.drive_uploader:
             self.drive_uploader.stop()
-        
-        logger.info("Drive uploader stopped")
     
     def queue_file(self, file_path):
         """Queue file for upload"""
@@ -630,11 +866,19 @@ class CombinedUploader:
             self.drive_uploader.queue_file(file_path)
     
     def get_status(self):
-        """Get status of upload service"""
-        status = {
+        """Get current status"""
+        if self.drive_uploader:
+            stats = self.drive_uploader.get_stats()
+            # Format for compatibility with main.py expectations
+            return {
+                'drive': {
+                    'enabled': stats['enabled'],
+                    'queue_size': stats['queue_size']
+                }
+            }
+        return {
             'drive': {
-                'enabled': self.drive_uploader is not None and self.drive_uploader.enabled,
-                'queue_size': self.drive_uploader.get_queue_size() if self.drive_uploader else 0
+                'enabled': False,
+                'queue_size': 0
             }
         }
-        return status

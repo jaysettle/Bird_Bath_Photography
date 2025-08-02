@@ -128,6 +128,19 @@ def is_main_app_running():
             pass
     return False
 
+def is_watchdog_service_active():
+    """Check if the bird-detection-watchdog service is active"""
+    try:
+        result = subprocess.run(
+            ['systemctl', 'is-active', 'bird-detection-watchdog.service'],
+            capture_output=True,
+            text=True
+        )
+        return result.returncode == 0 and result.stdout.strip() == 'active'
+    except Exception as e:
+        logger.error(f"Error checking watchdog service: {e}")
+        return False
+
 @app.route('/')
 def index():
     """Main page"""
@@ -168,31 +181,55 @@ def api_image(filename):
 def api_restart():
     """Restart the main application"""
     try:
-        # Kill existing process
-        subprocess.run(['pkill', '-f', 'main.py'], check=False)
-        time.sleep(2)
+        watchdog_active = is_watchdog_service_active()
+        logger.info(f"Restart requested - watchdog active: {watchdog_active}")
         
-        # Start new process
-        subprocess.Popen([
-            'python3', 
-            str(BASE_DIR / 'main.py')
-        ], 
-        stdout=subprocess.DEVNULL, 
-        stderr=subprocess.DEVNULL,
-        cwd=str(BASE_DIR))
-        
-        time.sleep(3)
-        
-        return jsonify({
-            'success': True,
-            'message': 'Application restarted',
-            'running': is_main_app_running()
-        })
+        if watchdog_active:
+            # If watchdog is active, just kill the app and let watchdog restart it
+            logger.info("Watchdog is active - killing app and letting watchdog restart it")
+            subprocess.run(['pkill', '-f', 'main.py'], check=False)
+            
+            # Wait a bit for the watchdog to detect and restart
+            time.sleep(5)
+            
+            return jsonify({
+                'success': True,
+                'message': 'Application killed - watchdog will restart it',
+                'running': is_main_app_running(),
+                'watchdog_managed': True
+            })
+        else:
+            # If no watchdog, do manual restart
+            logger.info("No watchdog - performing manual restart")
+            
+            # Kill existing process
+            subprocess.run(['pkill', '-f', 'main.py'], check=False)
+            time.sleep(2)
+            
+            # Start new process
+            subprocess.Popen([
+                'python3', 
+                str(BASE_DIR / 'main.py')
+            ], 
+            stdout=subprocess.DEVNULL, 
+            stderr=subprocess.DEVNULL,
+            cwd=str(BASE_DIR))
+            
+            time.sleep(3)
+            
+            return jsonify({
+                'success': True,
+                'message': 'Application manually restarted',
+                'running': is_main_app_running(),
+                'watchdog_managed': False
+            })
+            
     except Exception as e:
         logger.error(f"Error restarting app: {e}")
         return jsonify({
             'success': False,
-            'error': str(e)
+            'error': str(e),
+            'watchdog_managed': is_watchdog_service_active()
         }), 500
 
 @app.route('/api/logs')

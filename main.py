@@ -171,7 +171,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QTabWidget, QWidget,
                            QSizePolicy,
                            QSplitter, QFrame, QLineEdit, QTimeEdit, QFileDialog, 
                            QMessageBox, QScrollArea, QDialog)
-from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QMutex, QPoint, QRect, QUrl, QTime
+from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, pyqtSlot, QMutex, QPoint, QRect, QUrl, QTime
 from PyQt6.QtGui import QPixmap, QImage, QFont, QPalette, QColor, QPainter, QPen, QMouseEvent, QDesktopServices
 import cv2
 import numpy as np
@@ -183,6 +183,7 @@ from src.email_handler import EmailHandler
 from src.drive_uploader_simple import CombinedUploader
 from src.ai_bird_identifier import AIBirdIdentifier
 from src.species_tab import SpeciesTab
+from src.cleanup_manager import CleanupManager
 # Removed bird_prefilter import
 
 # Set up logging with configuration
@@ -190,10 +191,12 @@ config_path = os.path.join(os.path.dirname(__file__), 'config.json')
 setup_logging(config_path)
 setup_gui_logging()
 logger = get_logger(__name__)
+logger.info("Bird Bath Photography application started")
 
 class InteractivePreviewLabel(QLabel):
-    """Custom QLabel that handles mouse events for ROI selection"""
+    """Custom QLabel that handles mouse events for ROI selection and focus control"""
     roi_selected = pyqtSignal(QPoint, QPoint)
+    focus_point_clicked = pyqtSignal(QPoint)  # Signal for right-click focus
     
     def __init__(self):
         super().__init__()
@@ -211,50 +214,69 @@ class InteractivePreviewLabel(QLabel):
         self.roi_rect = QRect()
         self.current_pixmap = None
         
+        # Focus indicator
+        self.focus_click_point = None
+        self.focus_indicator_timer = QTimer()
+        self.focus_indicator_timer.timeout.connect(self.clear_focus_indicator)
+        self.focus_indicator_timer.setSingleShot(True)
+        
+        # Right-click drag prevention
+        self.right_button_pressed = False
+        self.right_click_start = None
+        self.drag_threshold = 5  # pixels
+        
     def heightForWidth(self, width):
         """Maintain 16:9 aspect ratio (locked)"""
         return int(width * 9 / 16)
         
     def mousePressEvent(self, event):
-        """Handle mouse press for ROI selection"""
+        """Handle mouse press for ROI selection or focus control"""
         if event.button() == Qt.MouseButton.LeftButton:
             self.drawing = True
             self.roi_start = event.pos()
             self.roi_end = event.pos()
             self.update()
+        elif event.button() == Qt.MouseButton.RightButton:
+            # Right-click for focus control - track for drag detection
+            self.right_button_pressed = True
+            self.right_click_start = event.pos()
+            # Don't emit focus signal yet - wait for release to distinguish from drag
             
     def mouseMoveEvent(self, event):
         """Handle mouse move for ROI selection"""
         if self.drawing:
             self.roi_end = event.pos()
             self.update()
-            
+    
     def mouseReleaseEvent(self, event):
-        """Handle mouse release for ROI selection"""
+        """Handle mouse release events"""
         if event.button() == Qt.MouseButton.LeftButton and self.drawing:
             self.drawing = False
             self.roi_end = event.pos()
-            
-            # Ensure we have a valid rectangle
-            if abs(self.roi_end.x() - self.roi_start.x()) > 10 and abs(self.roi_end.y() - self.roi_start.y()) > 10:
-                # Normalize coordinates
-                x1 = min(self.roi_start.x(), self.roi_end.x())
-                y1 = min(self.roi_start.y(), self.roi_end.y())
-                x2 = max(self.roi_start.x(), self.roi_end.x())
-                y2 = max(self.roi_start.y(), self.roi_end.y())
-                
-                self.roi_rect = QRect(x1, y1, x2 - x1, y2 - y1)
-                self.roi_selected.emit(QPoint(x1, y1), QPoint(x2, y2))
-                logger.info(f"ROI selected: ({x1}, {y1}) to ({x2}, {y2})")
-            else:
-                # Clear ROI if too small
-                self.roi_rect = QRect()
-                self.roi_selected.emit(QPoint(-1, -1), QPoint(-1, -1))
-                
             self.update()
             
+            # Emit ROI selected signal
+            self.roi_selected.emit(self.roi_start, self.roi_end)
+            
+        elif event.button() == Qt.MouseButton.RightButton and self.right_button_pressed:
+            self.right_button_pressed = False
+            
+            # Check if this was a click (not a drag)
+            if self.right_click_start:
+                distance = ((event.pos().x() - self.right_click_start.x()) ** 2 + 
+                           (event.pos().y() - self.right_click_start.y()) ** 2) ** 0.5
+                
+                if distance <= self.drag_threshold:
+                    # This was a click, not a drag - emit focus signal
+                    self.focus_click_point = self.right_click_start
+                    self.focus_indicator_timer.start(2000)  # Show indicator for 2 seconds
+                    self.update()
+                    self.focus_point_clicked.emit(self.right_click_start)
+                    logger.info(f"Focus point clicked at: {self.right_click_start.x()}, {self.right_click_start.y()}")
+                
+            self.right_click_start = None
     def paintEvent(self, event):
-        """Custom paint event to draw ROI rectangle"""
+        """Custom paint event to draw ROI rectangle and focus indicator"""
         super().paintEvent(event)
         
         if self.current_pixmap:
@@ -278,6 +300,19 @@ class InteractivePreviewLabel(QLabel):
                 painter.setPen(QPen(QColor(255, 255, 0), 2))  # Yellow while drawing
                 temp_rect = QRect(self.roi_start, self.roi_end)
                 painter.drawRect(temp_rect.normalized())
+            
+            # Draw focus click indicator
+            if self.focus_click_point:
+                # Draw crosshair at click point
+                painter.setPen(QPen(QColor(255, 0, 255), 3))  # Magenta for focus
+                x = self.focus_click_point.x()
+                y = self.focus_click_point.y()
+                painter.drawLine(x - 20, y, x + 20, y)
+                painter.drawLine(x, y - 20, x, y + 20)
+                
+                # Draw circle
+                painter.setPen(QPen(QColor(255, 0, 255), 2))
+                painter.drawEllipse(self.focus_click_point, 15, 15)
                 
             painter.end()
     
@@ -285,6 +320,11 @@ class InteractivePreviewLabel(QLabel):
         """Override setPixmap to store current pixmap"""
         self.current_pixmap = pixmap
         super().setPixmap(pixmap)
+    
+    def clear_focus_indicator(self):
+        """Clear the focus click indicator"""
+        self.focus_click_point = None
+        self.update()
     
         
     def clear_roi(self):
@@ -411,7 +451,7 @@ class DriveStatsMonitor(QThread):
                     logger.debug("DriveStatsMonitor: Fetching stats...")
                     try:
                         stats = self.uploader.drive_uploader.get_drive_folder_stats()
-                        logger.info(f"DriveStatsMonitor: Got stats: {stats}")
+                        logger.debug(f"DriveStatsMonitor: Got stats: {stats}")
                         self.drive_stats_updated.emit(stats)
                     except Exception as e:
                         logger.debug(f"DriveStatsMonitor: Failed to get stats: {e}")
@@ -481,6 +521,7 @@ class CameraTab(QWidget):
         
         self.preview_label = InteractivePreviewLabel()
         self.preview_label.roi_selected.connect(self.on_roi_selected)
+        self.preview_label.focus_point_clicked.connect(self.on_focus_point_clicked)
         preview_center_layout.addWidget(self.preview_label)
         
         preview_center_layout.addStretch()
@@ -882,7 +923,41 @@ class CameraTab(QWidget):
                 (start_point.x(), start_point.y()),
                 (end_point.x(), end_point.y())
             )
-            logger.info(f"ROI set: ({start_point.x()}, {start_point.y()}) to ({end_point.x()}, {end_point.y()})")
+    
+    def on_focus_point_clicked(self, point):
+        """Handle right-click focus adjustment based on position"""
+        # Calculate focus value based on vertical position
+        # Top of preview = far focus (higher values)
+        # Bottom of preview = near focus (lower values)
+        preview_height = self.preview_label.height()
+        y_position = point.y()
+        
+        # Invert y so top = far, bottom = near
+        normalized_y = 1.0 - (y_position / preview_height)
+        
+        # Map to focus range (0-255)
+        # For bird bath, use range 100-220 for practical focusing
+        min_focus = 100
+        max_focus = 220
+        new_focus = int(min_focus + (normalized_y * (max_focus - min_focus)))
+        
+        # Update focus slider
+        self.focus_slider.setValue(new_focus)
+        
+        # Show visual feedback
+        from PyQt6.QtWidgets import QToolTip
+        QToolTip.showText(
+            self.preview_label.mapToGlobal(point),
+            f"Focus set to {new_focus}\n(Top=Far {max_focus}, Bottom=Near {min_focus})",
+            self.preview_label,
+            QRect(point.x() - 50, point.y() - 50, 100, 100),
+            2000  # Show for 2 seconds
+        )
+        
+        logger.info(f"Focus adjusted to {new_focus} based on click at y={y_position} (normalized={normalized_y:.2f})")
+        
+        # Add visual indicator on preview
+        self.preview_label.update()
     
     def on_set_roi(self):
         """Set ROI for motion detection"""
@@ -1013,6 +1088,84 @@ class CameraTab(QWidget):
         except Exception as e:
             logger.error(f"Failed to save settings: {e}")
 
+class GalleryLoader(QThread):
+    """Background thread for loading gallery images"""
+    progress = pyqtSignal(int, int, str)  # current, total, message
+    image_loaded = pyqtSignal(object, str, float)  # widget_data, date_str, mtime
+    finished_loading = pyqtSignal()
+    
+    def __init__(self, storage_dir):
+        super().__init__()
+        self.storage_dir = storage_dir
+        self._is_running = True
+        
+    def stop(self):
+        self._is_running = False
+        
+    def run(self):
+        """Load images in background thread"""
+        try:
+            if not self.storage_dir.exists():
+                self.finished_loading.emit()
+                return
+            
+            # Get all image files
+            self.progress.emit(0, 0, "Scanning for images...")
+            image_files = []
+            for ext in ['*.jpg', '*.jpeg', '*.png']:
+                image_files.extend(self.storage_dir.glob(ext))
+            
+            if not image_files:
+                self.finished_loading.emit()
+                return
+                
+            image_files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+            total_images = len(image_files)
+            
+            # Load images
+            for idx, image_path in enumerate(image_files):
+                if not self._is_running:
+                    break
+                    
+                self.progress.emit(idx + 1, total_images, f"Loading {image_path.name}...")
+                
+                # Get date for grouping
+                mtime = image_path.stat().st_mtime
+                date_str = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d')
+                
+                # Load thumbnail
+                try:
+                    pixmap = QPixmap(str(image_path))
+                    if not pixmap.isNull() and self._is_running:
+                        scaled_pixmap = pixmap.scaled(180, 135, Qt.AspectRatioMode.KeepAspectRatio, 
+                                                     Qt.TransformationMode.FastTransformation)
+                        
+                        # Emit data for main thread to create widget
+                        widget_data = {
+                            'path': str(image_path),
+                            'name': image_path.name,
+                            'pixmap': scaled_pixmap,
+                            'mtime': mtime
+                        }
+                        if self._is_running:  # Check again before emitting
+                            self.image_loaded.emit(widget_data, date_str, mtime)
+                except Exception as e:
+                    logger.debug(f"Failed to load thumbnail for {image_path}: {e}")
+                
+                # Check if we should continue
+                if not self._is_running:
+                    break
+                
+                # Small delay to keep UI responsive
+                if idx % 10 == 0:
+                    self.msleep(10)
+                    
+            self.finished_loading.emit()
+            
+        except Exception as e:
+            logger.error(f"Error in gallery loader: {e}")
+            self.finished_loading.emit()
+
 class GalleryTab(QWidget):
     """Photo gallery tab for viewing all captured images"""
     
@@ -1022,8 +1175,19 @@ class GalleryTab(QWidget):
         self.selected_items = set()
         self.current_full_image = None
         self.email_handler = None  # Will be set from main window
+        self.loader_thread = None
+        self.images_by_date = {}
+        self.date_widgets = {}
+        self.gallery_items = []
         self.setup_ui()
         self.load_photos()
+    
+    def closeEvent(self, event):
+        """Clean up when gallery tab is closed"""
+        if self.loader_thread and self.loader_thread.isRunning():
+            self.loader_thread.stop()
+            self.loader_thread.wait(1000)  # Wait up to 1 second
+        super().closeEvent(event)
         
     def setup_ui(self):
         layout = QVBoxLayout(self)
@@ -1055,6 +1219,12 @@ class GalleryTab(QWidget):
         toolbar_layout.addStretch()
         layout.addLayout(toolbar_layout)
         
+        # Progress bar for loading
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setTextVisible(True)
+        layout.addWidget(self.progress_bar)
+        
         # Gallery scroll area
         self.scroll_area = QScrollArea()
         self.scroll_widget = QWidget()
@@ -1064,6 +1234,11 @@ class GalleryTab(QWidget):
         self.scroll_area.setWidget(self.scroll_widget)
         self.scroll_area.setWidgetResizable(True)
         layout.addWidget(self.scroll_area)
+        
+        # Status label at bottom
+        self.status_label = QLabel("Ready")
+        self.status_label.setStyleSheet("QLabel { color: #666; padding: 5px; }")
+        layout.addWidget(self.status_label)
         
         # Enable keyboard shortcuts
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -1079,14 +1254,125 @@ class GalleryTab(QWidget):
             # Clear selection
             self.clear_selection()
             
-    def load_photos(self):
-        """Load all photos from the storage directory"""
-        # Clear existing items
-        while self.gallery_layout.count():
-            item = self.gallery_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
+    def add_new_image(self, image_path):
+        """Add a single new image to the gallery without full reload"""
+        try:
+            path = Path(image_path)
+            if not path.exists():
+                return
                 
+            # Get image date
+            mtime = path.stat().st_mtime
+            date_str = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d')
+            
+            # Load and scale the image
+            pixmap = QPixmap(str(path))
+            if pixmap.isNull():
+                return
+                
+            scaled_pixmap = pixmap.scaled(180, 180, Qt.AspectRatioMode.KeepAspectRatio, 
+                                        Qt.TransformationMode.SmoothTransformation)
+            
+            # Create gallery item
+            widget_data = self.create_gallery_item(str(path), scaled_pixmap)
+            
+            # Add to the appropriate date section
+            if date_str not in self.images_by_date:
+                # Create new date section at the top
+                self.create_date_section(date_str, prepend=True)
+                self.images_by_date[date_str] = []
+            
+            # Insert at the beginning of today's images
+            self.images_by_date[date_str].insert(0, widget_data)
+            
+            # Add to the layout
+            if date_str in self.date_widgets:
+                grid_widget = self.date_widgets[date_str]
+                grid_layout = grid_widget.layout()
+                
+                # Shift existing items and insert new one at position 0
+                self.reorganize_date_grid(grid_layout, widget_data['container'])
+            
+            # Update status
+            total_images = sum(len(images) for images in self.images_by_date.values())
+            self.status_label.setText(f"Loaded {total_images} images from {len(self.images_by_date)} days")
+            
+            logger.info(f"Added new image to gallery: {path.name}")
+            
+        except Exception as e:
+            logger.error(f"Error adding new image to gallery: {e}")
+    
+    def reorganize_date_grid(self, grid_layout, new_widget):
+        """Reorganize grid to insert new widget at the beginning"""
+        # Store existing widgets
+        widgets = []
+        for i in range(grid_layout.count()):
+            item = grid_layout.itemAt(i)
+            if item and item.widget():
+                widgets.append(item.widget())
+        
+        # Clear layout
+        while grid_layout.count():
+            item = grid_layout.takeAt(0)
+            
+        # Add new widget first
+        grid_layout.addWidget(new_widget, 0, 0)
+        
+        # Re-add existing widgets
+        col = 1
+        row = 0
+        for widget in widgets:
+            if col >= 4:  # 4 columns
+                col = 0
+                row += 1
+            grid_layout.addWidget(widget, row, col)
+            col += 1
+    
+    def create_date_section(self, date_str, prepend=False):
+        """Create a date section in the gallery"""
+        # Date header
+        date_label = QLabel(date_str)
+        date_label.setStyleSheet("""
+            QLabel {
+                font-size: 16px;
+                font-weight: bold;
+                color: #333;
+                padding: 10px 0px 5px 0px;
+            }
+        """)
+        
+        # Grid for this date's images
+        grid_widget = QWidget()
+        grid_layout = QGridLayout(grid_widget)
+        grid_layout.setSpacing(10)
+        
+        # Add to main gallery layout
+        if prepend and self.gallery_layout.count() > 0:
+            # Insert at the top
+            self.gallery_layout.insertWidget(0, date_label)
+            self.gallery_layout.insertWidget(1, grid_widget)
+        else:
+            # Add at the end
+            row = self.gallery_layout.rowCount()
+            self.gallery_layout.addWidget(date_label, row, 0, 1, 4)
+            self.gallery_layout.addWidget(grid_widget, row + 1, 0, 1, 4)
+        
+        self.date_widgets[date_str] = grid_widget
+    
+    def load_photos(self):
+        """Load all photos from the storage directory - non-blocking"""
+        # Stop any existing loader
+        if self.loader_thread and self.loader_thread.isRunning():
+            self.loader_thread.stop()
+            self.loader_thread.wait()
+        
+        # Clear existing items
+        self.clear_gallery()
+        
+        # Reset data structures
+        self.images_by_date.clear()
+        self.date_widgets.clear()
+        self.gallery_items.clear()
         self.selected_items.clear()
         self.update_selection_label()
         
@@ -1095,181 +1381,151 @@ class GalleryTab(QWidget):
                                            str(Path.home() / 'BirdPhotos')))
         
         if not storage_dir.exists():
+            self.status_label.setText("No photos directory found")
             return
-            
-        # Get all image files, sorted by modification time (newest first)
-        image_files = []
-        for ext in ['*.jpg', '*.jpeg', '*.png']:
-            image_files.extend(storage_dir.glob(ext))
-            
-        image_files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
         
-        # Group images by date
+        # Show progress bar
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.refresh_btn.setEnabled(False)
+        self.status_label.setText("Loading photos...")
+        
+        # Start background loader
+        self.loader_thread = GalleryLoader(storage_dir)
+        self.loader_thread.progress.connect(self.on_load_progress)
+        self.loader_thread.image_loaded.connect(self.on_image_loaded)
+        self.loader_thread.finished_loading.connect(self.on_loading_finished)
+        self.loader_thread.start()
+    
+    def clear_gallery(self):
+        """Clear all gallery widgets"""
+        while self.gallery_layout.count():
+            item = self.gallery_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+    
+    @pyqtSlot(int, int, str)
+    def on_load_progress(self, current, total, message):
+        """Update progress bar"""
+        self.progress_bar.setMaximum(total)
+        self.progress_bar.setValue(current)
+        self.progress_bar.setFormat(f"{current}/{total} - {message}")
+    
+    @pyqtSlot(object, str, float)
+    def on_image_loaded(self, widget_data, date_str, mtime):
+        """Add loaded image to gallery"""
         from datetime import datetime
-        images_by_date = {}
-        for image_path in image_files:
-            date_str = datetime.fromtimestamp(image_path.stat().st_mtime).strftime('%Y-%m-%d')
-            if date_str not in images_by_date:
-                images_by_date[date_str] = []
-            images_by_date[date_str].append(image_path)
-            
-        # Create thumbnails grouped by date
-        col_count = 4  # Number of columns to fit in 1000px width
-        current_row = 0
         
-        for date_str in sorted(images_by_date.keys(), reverse=True):
-            # Add date separator with photo count
-            photo_count = len(images_by_date[date_str])
-            date_text = datetime.strptime(date_str, '%Y-%m-%d').strftime('%A, %B %d, %Y')
-            date_label = QLabel(f"{date_text} - {photo_count} photo{'s' if photo_count != 1 else ''}")
-            date_label.setStyleSheet("""
-                QLabel {
-                    font-size: 16px;
-                    font-weight: bold;
-                    color: #4CAF50;
-                    padding: 10px;
-                    background-color: #f0f0f0;
-                    border-radius: 5px;
-                }
-            """)
-            self.gallery_layout.addWidget(date_label, current_row, 0, 1, col_count)
-            current_row += 1
+        # Group by date
+        if date_str not in self.images_by_date:
+            self.images_by_date[date_str] = []
             
-            # Add images for this date
-            col_idx = 0
-            for image_path in images_by_date[date_str]:
-                if col_idx >= col_count:
-                    col_idx = 0
-                    current_row += 1
-                    
-                thumbnail_widget = self.create_thumbnail(image_path)
-                self.gallery_layout.addWidget(thumbnail_widget, current_row, col_idx)
-                col_idx += 1
-                
-            # Move to next row for next date
-            current_row += 2  # Extra spacing between dates
+            # Create date header
+            date_label = QLabel(datetime.fromtimestamp(mtime).strftime('%A, %B %d, %Y'))
+            date_label.setStyleSheet("font-size: 14px; font-weight: bold; padding: 5px;")
             
-    def create_thumbnail(self, image_path):
-        """Create a thumbnail widget for an image"""
-        widget = QWidget()
-        widget.setFixedSize(200, 190)  # Smaller to fit 4 columns in 1000px width
-        layout = QVBoxLayout(widget)
-        layout.setContentsMargins(3, 3, 3, 3)  # Minimal margins
-        layout.setSpacing(1)  # Very tight spacing
+            row = len(self.date_widgets) * 100  # Space for images
+            self.gallery_layout.addWidget(date_label, row, 0, 1, 4)
+            self.date_widgets[date_str] = {'label': date_label, 'row': row + 1}
         
-        # Checkbox for selection
-        checkbox = QCheckBox()
-        checkbox.stateChanged.connect(lambda state, path=image_path: 
-                                    self.on_selection_changed(path, state))
-        layout.addWidget(checkbox, alignment=Qt.AlignmentFlag.AlignLeft)
+        # Add image to date group
+        date_info = self.date_widgets[date_str]
+        images_in_date = len(self.images_by_date[date_str])
+        col = images_in_date % 4
+        row = date_info['row'] + (images_in_date // 4)
         
-        # Thumbnail label - 4:3 aspect ratio
-        label = QLabel()
-        label.setFixedSize(180, 135)  # 4:3 aspect ratio (180 ÷ 135 = 1.33)
-        label.setScaledContents(False)  # Don't stretch - maintain aspect ratio
-        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        label.setStyleSheet("""
-            QLabel {
-                border: 1px solid #ccc;
-                background-color: #f0f0f0;
-                padding: 0px;
-                margin: 0px;
+        # Create thumbnail widget
+        item_widget = self.create_gallery_item(widget_data['path'], widget_data['pixmap'])
+        self.gallery_layout.addWidget(item_widget, row, col)
+        
+        self.images_by_date[date_str].append(widget_data['path'])
+        self.gallery_items.append((widget_data['path'], item_widget))
+    
+    @pyqtSlot()
+    def on_loading_finished(self):
+        """Handle loading completion"""
+        self.progress_bar.setVisible(False)
+        self.refresh_btn.setEnabled(True)
+        
+        total_images = sum(len(images) for images in self.images_by_date.values())
+        self.status_label.setText(f"Loaded {total_images} images from {len(self.images_by_date)} days")
+    
+    def create_gallery_item(self, image_path, scaled_pixmap):
+        """Create a gallery item widget"""
+        container = QWidget()
+        container.setFixedSize(200, 200)
+        container.setStyleSheet("""
+            QWidget {
+                background-color: #2a2a2a;
+                border: 2px solid transparent;
+                border-radius: 5px;
             }
-            QLabel:hover {
-                border: 2px solid #4CAF50;
+            QWidget:hover {
+                border-color: #555;
             }
         """)
         
-        # Load thumbnail
-        pixmap = QPixmap(str(image_path))
-        if not pixmap.isNull():
-            scaled_pixmap = pixmap.scaled(200, 140, Qt.AspectRatioMode.KeepAspectRatio, 
-                                         Qt.TransformationMode.SmoothTransformation)
-            label.setPixmap(scaled_pixmap)
-        else:
-            label.setText("Error loading image")
-            
-        # Make thumbnail clickable
-        label.mousePressEvent = lambda event, path=image_path: self.show_full_image(path)
-        label.setCursor(Qt.CursorShape.PointingHandCursor)
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(5, 5, 5, 5)
         
-        layout.addWidget(label)
+        # Checkbox for selection
+        checkbox = QCheckBox()
+        checkbox.stateChanged.connect(lambda state: self.on_item_selected(image_path, state))
+        layout.addWidget(checkbox, alignment=Qt.AlignmentFlag.AlignRight)
         
-        # Filename label
-        filename_label = QLabel(image_path.name)
-        filename_label.setWordWrap(True)
-        filename_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        filename_label.setMaximumHeight(15)
-        filename_label.setStyleSheet("font-size: 10px;")
-        layout.addWidget(filename_label)
+        # Thumbnail
+        thumb_label = QLabel()
+        thumb_label.setPixmap(scaled_pixmap)
+        thumb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        thumb_label.setStyleSheet("QLabel { background-color: #000; }")
+        thumb_label.mousePressEvent = lambda e: self.show_full_image(image_path) if e.button() == Qt.MouseButton.LeftButton else None
+        thumb_label.setCursor(Qt.CursorShape.PointingHandCursor)
+        layout.addWidget(thumb_label)
         
-        # Time ago label
-        time_ago = self.get_time_ago(image_path.stat().st_mtime)
-        time_label = QLabel(time_ago)
-        time_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        time_label.setStyleSheet("color: #666; font-size: 11px;")
-        layout.addWidget(time_label)
+        # Filename
+        name_label = QLabel(Path(image_path).name)
+        name_label.setStyleSheet("color: #ccc; font-size: 10px;")
+        name_label.setWordWrap(True)
+        name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(name_label)
         
-        # Store checkbox reference
-        widget.checkbox = checkbox
-        widget.image_path = image_path
-        
-        return widget
-        
-    def get_time_ago(self, timestamp):
-        """Get human-readable time ago string"""
-        import time
-        from datetime import datetime
-        
-        now = time.time()
-        diff = now - timestamp
-        
-        if diff < 60:
-            return "just now"
-        elif diff < 3600:
-            minutes = int(diff / 60)
-            return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
-        elif diff < 86400:
-            hours = int(diff / 3600)
-            return f"{hours} hour{'s' if hours != 1 else ''} ago"
-        elif diff < 604800:
-            days = int(diff / 86400)
-            return f"{days} day{'s' if days != 1 else ''} ago"
-        else:
-            return datetime.fromtimestamp(timestamp).strftime('%b %d, %Y')
-        
-    def on_selection_changed(self, path, state):
-        """Handle selection change"""
+        return container
+    
+    def on_item_selected(self, path, state):
+        """Handle item selection"""
         if state == 2:  # Checked
             self.selected_items.add(path)
         else:
             self.selected_items.discard(path)
-            
         self.update_selection_label()
-        
+    
     def update_selection_label(self):
         """Update selection count and button states"""
         count = len(self.selected_items)
         self.selection_label.setText(f"{count} selected")
         self.email_btn.setEnabled(count > 0)
         self.delete_btn.setEnabled(count > 0)
-        
+    
     def select_all(self):
         """Select all images"""
-        for i in range(self.gallery_layout.count()):
-            widget = self.gallery_layout.itemAt(i).widget()
-            if widget and hasattr(widget, 'checkbox'):
-                widget.checkbox.setChecked(True)
-                
+        for path, widget in self.gallery_items:
+            checkbox = widget.findChild(QCheckBox)
+            if checkbox:
+                checkbox.setChecked(True)
+    
     def clear_selection(self):
         """Clear all selections"""
-        for i in range(self.gallery_layout.count()):
-            widget = self.gallery_layout.itemAt(i).widget()
-            if widget and hasattr(widget, 'checkbox'):
-                widget.checkbox.setChecked(False)
+        for path, widget in self.gallery_items:
+            checkbox = widget.findChild(QCheckBox)
+            if checkbox:
+                checkbox.setChecked(False)
                 
     def show_full_image(self, image_path):
         """Show full-size image in a dialog"""
+        # Convert to Path object if it's a string
+        if isinstance(image_path, str):
+            image_path = Path(image_path)
+            
         dialog = QDialog(self)
         dialog.setWindowTitle(image_path.name)
         dialog.setModal(True)
@@ -1395,6 +1651,14 @@ class ServicesTab(QWidget):
         self.uptime_timer.start(5000)  # Update every 5 seconds to reduce CPU load
         self.update_uptime()
         
+        # Update service statuses
+        self.update_service_statuses()
+        
+    def set_config(self, config):
+        """Update config reference and refresh statuses"""
+        self.config = config
+        self.update_service_statuses()
+        
     
     def cleanup(self):
         """Clean up background threads"""
@@ -1502,42 +1766,36 @@ class ServicesTab(QWidget):
         app_status_group.setLayout(app_status_layout)
         left_layout.addWidget(app_status_group)
         
-        # Configuration toggles
-        config_group = QGroupBox("Configuration")
-        config_layout = QGridLayout()
+        # Service Status Overview
+        status_group = QGroupBox("Service Status")
+        status_layout = QGridLayout()
         
-        # Drive upload toggle
-        config_layout.addWidget(QLabel("Google Drive Upload:"), 0, 0)
-        self.drive_upload_cb = QCheckBox("Enabled")
-        self.drive_upload_cb.stateChanged.connect(self.on_drive_upload_changed)
-        config_layout.addWidget(self.drive_upload_cb, 0, 1)
+        # Google Drive Upload status
+        status_layout.addWidget(QLabel("Google Drive Upload:"), 0, 0)
+        self.drive_service_status = QLabel("Disabled")
+        self.drive_service_status.setStyleSheet("color: #666;")
+        status_layout.addWidget(self.drive_service_status, 0, 1)
         
+        # Email notifications status
+        status_layout.addWidget(QLabel("Email Notifications:"), 1, 0)
+        self.email_service_status = QLabel("Disabled")
+        self.email_service_status.setStyleSheet("color: #666;")
+        status_layout.addWidget(self.email_service_status, 1, 1)
         
-        # Email notifications toggle
-        config_layout.addWidget(QLabel("Email Notifications:"), 1, 0)
-        self.email_notifications_cb = QCheckBox("Enabled")
-        self.email_notifications_cb.stateChanged.connect(self.on_email_notifications_changed)
-        config_layout.addWidget(self.email_notifications_cb, 1, 1)
+        # Hourly reports status
+        status_layout.addWidget(QLabel("Hourly Reports:"), 2, 0)
+        self.hourly_service_status = QLabel("Disabled")
+        self.hourly_service_status.setStyleSheet("color: #666;")
+        status_layout.addWidget(self.hourly_service_status, 2, 1)
         
-        # Hourly reports toggle
-        config_layout.addWidget(QLabel("Hourly Reports:"), 2, 0)
-        self.hourly_reports_cb = QCheckBox("Enabled")
-        self.hourly_reports_cb.stateChanged.connect(self.on_hourly_reports_changed)
-        config_layout.addWidget(self.hourly_reports_cb, 2, 1)
+        # Storage cleanup status
+        status_layout.addWidget(QLabel("Storage Cleanup:"), 3, 0)
+        self.cleanup_service_status = QLabel("Disabled")
+        self.cleanup_service_status.setStyleSheet("color: #666;")
+        status_layout.addWidget(self.cleanup_service_status, 3, 1)
         
-        # Cleanup service toggle
-        config_layout.addWidget(QLabel("Storage Cleanup:"), 3, 0)
-        self.cleanup_cb = QCheckBox("Enabled")
-        self.cleanup_cb.stateChanged.connect(self.on_cleanup_changed)
-        config_layout.addWidget(self.cleanup_cb, 3, 1)
-        
-        # Save config button
-        self.save_config_btn = QPushButton("Save Configuration")
-        self.save_config_btn.clicked.connect(self.on_save_config)
-        config_layout.addWidget(self.save_config_btn, 4, 0, 1, 2)
-        
-        config_group.setLayout(config_layout)
-        left_layout.addWidget(config_group)
+        status_group.setLayout(status_layout)
+        left_layout.addWidget(status_group)
         
         left_layout.addStretch()
         
@@ -1591,11 +1849,6 @@ class ServicesTab(QWidget):
         self.drive_folder_link.mousePressEvent = self.on_drive_folder_link_clicked
         drive_layout.addWidget(self.drive_folder_link, 6, 1)
         
-        # Clear folder button
-        self.clear_drive_btn = QPushButton("Clear Drive Folder")
-        self.clear_drive_btn.clicked.connect(self.on_clear_drive_folder)
-        drive_layout.addWidget(self.clear_drive_btn, 7, 0, 1, 2)
-        
         drive_group.setLayout(drive_layout)
         right_layout.addWidget(drive_group)
         
@@ -1635,9 +1888,6 @@ class ServicesTab(QWidget):
         
         main_layout.addWidget(splitter)
         self.setLayout(main_layout)
-        
-        # Load current configuration
-        self.load_config_toggles()
     
     def update_service_status(self, status):
         """Update service status - no longer using services table"""
@@ -1672,7 +1922,7 @@ class ServicesTab(QWidget):
     
     def update_drive_stats(self, stats):
         """Update Drive statistics from background thread"""
-        logger.info(f"Updating Drive stats in GUI: {stats}")
+        logger.debug(f"Updating Drive stats in GUI: {stats}")
         if stats and stats.get('file_count', 0) > 0:
             self.drive_file_count.setText(str(stats['file_count']))
             
@@ -1781,21 +2031,6 @@ class ServicesTab(QWidget):
             self.watchdog_status.setStyleSheet("color: #ff6464;")
             logger.error(f"Error checking watchdog status: {e}")
     
-    def on_clear_drive_folder(self):
-        """Clear Google Drive folder"""
-        try:
-            if hasattr(self.uploader, 'drive_uploader') and self.uploader.drive_uploader:
-                if self.uploader.drive_uploader.clear_drive_folder():
-                    logger.info("Drive folder cleared successfully")
-                    # Update stats immediately
-                    self.update_upload_status()
-                else:
-                    logger.error("Failed to clear Drive folder")
-            else:
-                logger.error("Drive uploader not available")
-        except Exception as e:
-            logger.error(f"Error clearing Drive folder: {e}")
-    
     def on_drive_folder_link_clicked(self, event):
         """Handle clicking on the Drive folder link"""
         try:
@@ -1822,29 +2057,30 @@ class ServicesTab(QWidget):
             self.email_handler.send_reboot_notification(test_info)
             logger.info("Test email sent")
     
-    def on_drive_upload_changed(self, state):
-        """Handle Drive upload toggle change"""
-        enabled = state == Qt.CheckState.Checked.value
-        logger.info(f"Drive upload {'enabled' if enabled else 'disabled'}")
-        # Update will be applied when Save Config is clicked
-    
-    def on_email_notifications_changed(self, state):
-        """Handle Email notifications toggle change"""
-        enabled = state == Qt.CheckState.Checked.value
-        logger.info(f"Email notifications {'enabled' if enabled else 'disabled'}")
-        # Update will be applied when Save Config is clicked
-    
-    def on_hourly_reports_changed(self, state):
-        """Handle Hourly reports toggle change"""
-        enabled = state == Qt.CheckState.Checked.value
-        logger.info(f"Hourly reports {'enabled' if enabled else 'disabled'}")
-        # Update will be applied when Save Config is clicked
-    
-    def on_cleanup_changed(self, state):
-        """Handle Storage cleanup toggle change"""
-        enabled = state == Qt.CheckState.Checked.value
-        logger.info(f"Storage cleanup {'enabled' if enabled else 'disabled'}")
-        # Update will be applied when Save Config is clicked
+    def update_service_statuses(self):
+        """Update all service status displays"""
+        if not self.config:
+            return
+            
+        # Google Drive Upload status
+        drive_enabled = self.config.get('services', {}).get('drive_upload', {}).get('enabled', False)
+        self.drive_service_status.setText("Enabled" if drive_enabled else "Disabled")
+        self.drive_service_status.setStyleSheet("color: #4CAF50; font-weight: bold;" if drive_enabled else "color: #666;")
+        
+        # Email notifications status
+        email_enabled = self.config.get('email', {}).get('enabled', False)
+        self.email_service_status.setText("Enabled" if email_enabled else "Disabled")
+        self.email_service_status.setStyleSheet("color: #4CAF50; font-weight: bold;" if email_enabled else "color: #666;")
+        
+        # Hourly reports status
+        hourly_enabled = self.config.get('email', {}).get('hourly_reports', False)
+        self.hourly_service_status.setText("Enabled" if hourly_enabled else "Disabled")
+        self.hourly_service_status.setStyleSheet("color: #4CAF50; font-weight: bold;" if hourly_enabled else "color: #666;")
+        
+        # Storage cleanup status
+        cleanup_enabled = self.config.get('storage', {}).get('cleanup_enabled', False)
+        self.cleanup_service_status.setText("Enabled" if cleanup_enabled else "Disabled")
+        self.cleanup_service_status.setStyleSheet("color: #4CAF50; font-weight: bold;" if cleanup_enabled else "color: #666;")
     
     def update_openai_count(self):
         """Update OpenAI daily count display"""
@@ -1862,64 +2098,6 @@ class ServicesTab(QWidget):
             
             self.uptime_label.setText(f"{hours}h {minutes}m {seconds}s")
     
-    
-    def on_save_config(self):
-        """Save configuration changes"""
-        try:
-            # Load current config
-            config_path = os.path.join(os.path.dirname(__file__), 'config.json')
-            with open(config_path, 'r') as f:
-                config = json.load(f)
-            
-            # Update config based on toggle states
-            config['services']['drive_upload']['enabled'] = self.drive_upload_cb.isChecked()
-            config['services']['cleanup']['enabled'] = self.cleanup_cb.isChecked()
-            config['email']['hourly_report'] = self.hourly_reports_cb.isChecked()
-            
-            # Save config
-            with open(config_path, 'w') as f:
-                json.dump(config, f, indent=4)
-            
-            logger.info("Configuration saved successfully")
-            
-            # Show confirmation
-            from PyQt6.QtWidgets import QMessageBox
-            msg = QMessageBox()
-            msg.setIcon(QMessageBox.Icon.Information)
-            msg.setText("Configuration saved successfully!")
-            msg.setInformativeText("Restart the application for changes to take effect.")
-            msg.setWindowTitle("Configuration Saved")
-            msg.exec()
-            
-        except Exception as e:
-            logger.error(f"Error saving configuration: {e}")
-            
-            # Show error
-            from PyQt6.QtWidgets import QMessageBox
-            msg = QMessageBox()
-            msg.setIcon(QMessageBox.Icon.Critical)
-            msg.setText("Error saving configuration!")
-            msg.setInformativeText(str(e))
-            msg.setWindowTitle("Configuration Error")
-            msg.exec()
-    
-    def load_config_toggles(self):
-        """Load current configuration into toggles"""
-        try:
-            config_path = os.path.join(os.path.dirname(__file__), 'config.json')
-            with open(config_path, 'r') as f:
-                config = json.load(f)
-            
-            # Set toggle states based on config
-            self.drive_upload_cb.setChecked(config['services']['drive_upload']['enabled'])
-            self.cleanup_cb.setChecked(config['services']['cleanup']['enabled'])
-            self.hourly_reports_cb.setChecked(config['email']['hourly_report'])
-            
-            # Email notifications are always enabled for now
-            self.email_notifications_cb.setChecked(True)
-            
-        except Exception as e:
-            logger.error(f"Error loading configuration: {e}")
 
 class ConfigTab(QWidget):
     """Configuration tab for all system settings"""
@@ -1987,8 +2165,17 @@ class ConfigTab(QWidget):
         group_layout.addWidget(app_password_link, 1, 2)
         
         # Email enabled checkbox
-        self.email_enabled = QCheckBox("Enable Email Notifications")
-        group_layout.addWidget(self.email_enabled, 2, 0, 1, 3)
+        self.email_notifications_enabled = QCheckBox("Enable Email Notifications")
+        group_layout.addWidget(self.email_notifications_enabled, 2, 0, 1, 3)
+        
+        # Hourly reports checkbox
+        self.hourly_reports_enabled = QCheckBox("Enable Hourly Reports")
+        group_layout.addWidget(self.hourly_reports_enabled, 3, 0, 1, 3)
+        
+        # Test email button
+        self.test_email_btn = QPushButton("Send Test Email")
+        self.test_email_btn.clicked.connect(self.on_test_email)
+        group_layout.addWidget(self.test_email_btn, 4, 0, 1, 3)
         
         group.setLayout(group_layout)
         layout.addWidget(group)
@@ -2018,10 +2205,19 @@ class ConfigTab(QWidget):
         self.cleanup_time.setDisplayFormat("HH:mm")
         group_layout.addWidget(self.cleanup_time, 2, 1)
         
+        # Storage cleanup checkbox
+        self.cleanup_enabled = QCheckBox("Enable Storage Cleanup")
+        group_layout.addWidget(self.cleanup_enabled, 3, 0, 1, 2)
+        
+        # Manual cleanup button
+        cleanup_now_btn = QPushButton("Run Cleanup Now")
+        cleanup_now_btn.clicked.connect(self.run_cleanup_now)
+        group_layout.addWidget(cleanup_now_btn, 3, 2)
+        
         # Clear button
         clear_local_btn = QPushButton("Clear All Local Images")
         clear_local_btn.clicked.connect(self.clear_local_images)
-        group_layout.addWidget(clear_local_btn, 3, 0, 1, 3)
+        group_layout.addWidget(clear_local_btn, 4, 0, 1, 3)
         
         group.setLayout(group_layout)
         layout.addWidget(group)
@@ -2031,8 +2227,8 @@ class ConfigTab(QWidget):
         group_layout = QGridLayout()
         
         # Drive enabled
-        self.drive_enabled = QCheckBox("Enable Google Drive Upload")
-        group_layout.addWidget(self.drive_enabled, 0, 0, 1, 3)
+        self.drive_upload_enabled = QCheckBox("Enable Google Drive Upload")
+        group_layout.addWidget(self.drive_upload_enabled, 0, 0, 1, 3)
         
         # Folder name
         group_layout.addWidget(QLabel("Folder Name:"), 1, 0)
@@ -2046,15 +2242,22 @@ class ConfigTab(QWidget):
         self.drive_limit.setValue(2)
         group_layout.addWidget(self.drive_limit, 2, 1)
         
+        # Cleanup time
+        group_layout.addWidget(QLabel("Cleanup Time:"), 3, 0)
+        self.drive_cleanup_time = QTimeEdit()
+        self.drive_cleanup_time.setTime(QTime(23, 30))  # Default 11:30 PM
+        self.drive_cleanup_time.setDisplayFormat("HH:mm")
+        group_layout.addWidget(self.drive_cleanup_time, 3, 1)
+        
         # OAuth setup button
         setup_drive_btn = QPushButton("Setup Google Drive OAuth")
         setup_drive_btn.clicked.connect(self.setup_google_drive)
-        group_layout.addWidget(setup_drive_btn, 3, 0, 1, 2)
+        group_layout.addWidget(setup_drive_btn, 4, 0, 1, 2)
         
         # Clear button
         clear_drive_btn = QPushButton("Clear All Drive Images")
         clear_drive_btn.clicked.connect(self.clear_drive_images)
-        group_layout.addWidget(clear_drive_btn, 3, 2)
+        group_layout.addWidget(clear_drive_btn, 4, 2)
         
         group.setLayout(group_layout)
         layout.addWidget(group)
@@ -2176,7 +2379,12 @@ class ConfigTab(QWidget):
         email_config = self.config.get('email', {})
         self.email_sender.setText(email_config.get('sender', ''))
         self.email_password.setText(email_config.get('password', ''))
-        self.email_enabled.setChecked(bool(email_config.get('sender')))
+        # Set email notification checkboxes
+        email_notifications = email_config.get('enabled', False)
+        self.email_notifications_enabled.setChecked(email_notifications)
+        
+        hourly_reports = email_config.get('hourly_reports', False)
+        self.hourly_reports_enabled.setChecked(hourly_reports)
         
         # Storage settings
         storage_config = self.config.get('storage', {})
@@ -2186,12 +2394,16 @@ class ConfigTab(QWidget):
         cleanup_time = storage_config.get('cleanup_time', '23:30')
         hour, minute = map(int, cleanup_time.split(':'))
         self.cleanup_time.setTime(QTime(hour, minute))
+        self.cleanup_enabled.setChecked(storage_config.get('cleanup_enabled', False))
         
         # Drive settings
         drive_config = self.config.get('services', {}).get('drive_upload', {})
-        self.drive_enabled.setChecked(drive_config.get('enabled', False))
+        self.drive_upload_enabled.setChecked(drive_config.get('enabled', False))
         self.drive_folder.setText(drive_config.get('folder_name', 'Bird Photos'))
         self.drive_limit.setValue(drive_config.get('max_size_gb', 2))
+        cleanup_time_str = drive_config.get('cleanup_time', '23:30')
+        cleanup_time = QTime.fromString(cleanup_time_str, 'HH:mm')
+        self.drive_cleanup_time.setTime(cleanup_time)
         
         # OpenAI settings
         openai_config = self.config.get('openai', {})
@@ -2263,6 +2475,25 @@ class ConfigTab(QWidget):
                                        f"Failed to run setup script:\n\n{str(e2)}\n\n"
                                        f"Please run manually:\n"
                                        f"python3 {setup_script}")
+    
+    def run_cleanup_now(self):
+        """Run storage cleanup manually"""
+        try:
+            from src.cleanup_manager import CleanupManager
+            logger.info("Running manual storage cleanup...")
+            cleanup_manager = CleanupManager(self.config)
+            result = cleanup_manager.cleanup_old_files()
+            
+            if result['cleaned']:
+                msg = f"Cleanup completed!\n\nDeleted {result['files_deleted']} files\nFreed {result['space_freed']/(1024*1024):.1f}MB\nCurrent size: {result['current_size']:.2f}GB"
+                QMessageBox.information(self, "Cleanup Complete", msg)
+            else:
+                msg = f"No cleanup needed.\n\nCurrent size: {result['current_size']:.2f}GB\nLimit: {self.config['storage']['max_size_gb']}GB"
+                QMessageBox.information(self, "Storage OK", msg)
+                
+        except Exception as e:
+            logger.error(f"Manual cleanup failed: {e}")
+            QMessageBox.critical(self, "Cleanup Failed", f"Storage cleanup failed:\n{str(e)}")
     
     def clear_local_images(self):
         """Clear all local images and related tracking files"""
@@ -2614,7 +2845,8 @@ class ConfigTab(QWidget):
                 'receivers': {'primary': self.email_sender.text()},
                 'smtp_server': 'smtp.gmail.com',
                 'smtp_port': 465,
-                'hourly_report': True,
+                'enabled': self.email_notifications_enabled.isChecked(),
+                'hourly_reports': self.hourly_reports_enabled.isChecked(),
                 'daily_email_time': '16:30',
                 'quiet_hours': {'start': 23, 'end': 5}
             }
@@ -2622,17 +2854,19 @@ class ConfigTab(QWidget):
             self.config['storage'] = {
                 'save_dir': self.storage_dir.text(),
                 'max_size_gb': self.storage_limit.value(),
-                'cleanup_time': self.cleanup_time.time().toString('HH:mm')
+                'cleanup_time': self.cleanup_time.time().toString('HH:mm'),
+                'cleanup_enabled': self.cleanup_enabled.isChecked()
             }
             
             if 'services' not in self.config:
                 self.config['services'] = {}
             
             self.config['services']['drive_upload'] = {
-                'enabled': self.drive_enabled.isChecked(),
+                'enabled': self.drive_upload_enabled.isChecked(),
                 'folder_name': self.drive_folder.text(),
                 'upload_delay': 3,
                 'max_size_gb': self.drive_limit.value(),
+                'cleanup_time': self.drive_cleanup_time.time().toString('HH:mm'),
                 'note': 'OAuth2 only - personal Google Drive folder'
             }
             
@@ -2662,6 +2896,20 @@ class ConfigTab(QWidget):
         
         if reply == QMessageBox.StandardButton.Yes:
             QApplication.quit()
+    
+    def on_test_email(self):
+        """Send test email"""
+        # Get email handler from main window
+        main_window = self.window()
+        if hasattr(main_window, 'email_handler') and main_window.email_handler:
+            test_info = {
+                'hostname': 'test-system',
+                'ip_address': '127.0.0.1',
+                'uptime': '5 minutes'
+            }
+            main_window.email_handler.send_reboot_notification(test_info)
+            QMessageBox.information(self, "Test Email", "Test email sent!")
+            logger.info("Test email sent")
 
 class LogsTab(QWidget):
     """Real-time logs tab"""
@@ -2745,6 +2993,12 @@ class MainWindow(QMainWindow):
         self.clock_timer.timeout.connect(self.update_clock)
         self.clock_timer.start(10000)  # Update every 10 seconds to reduce CPU load
         
+        # Cleanup timer - check every minute if it's time to clean
+        self.cleanup_timer = QTimer()
+        self.cleanup_timer.timeout.connect(self.check_cleanup_time)
+        self.cleanup_timer.start(60000)  # Check every minute
+        self.last_cleanup_date = None
+        
         # Load configuration
         self.config_manager = ConfigManager()
         self.config = self.config_manager.config
@@ -2777,6 +3031,9 @@ class MainWindow(QMainWindow):
         
         # AI Bird Identifier (Day 1 Feature)
         self.bird_identifier = AIBirdIdentifier(self.config)
+        
+        # Cleanup manager for automatic storage cleanup
+        self.cleanup_manager = CleanupManager(self.config)
         
         # Bird Pre-filter Service
         # Removed bird prefilter initialization
@@ -3017,6 +3274,60 @@ class MainWindow(QMainWindow):
         current_time = datetime.now().strftime("%H:%M:%S")
         self.setWindowTitle(f"{self.base_title} - {current_time}")
     
+    def check_cleanup_time(self):
+        """Check if it's time to run storage cleanup"""
+        from datetime import datetime, date
+        
+        # Check if cleanup is enabled
+        cleanup_enabled = self.config.get('storage', {}).get('cleanup_enabled', False)
+        if not cleanup_enabled:
+            return
+        
+        # Get configured cleanup time
+        cleanup_time_str = self.config.get('storage', {}).get('cleanup_time', '23:30')
+        hour, minute = map(int, cleanup_time_str.split(':'))
+        
+        now = datetime.now()
+        today = date.today()
+        
+        # Log check (only log once per minute to avoid spam)
+        if not hasattr(self, '_last_cleanup_log_minute') or self._last_cleanup_log_minute != now.minute:
+            self._last_cleanup_log_minute = now.minute
+            logger.debug(f"Checking cleanup time: current={now.strftime('%H:%M')}, scheduled={cleanup_time_str}, last_run={self.last_cleanup_date}")
+        
+        # Check if we haven't cleaned up today and it's past the cleanup time
+        if self.last_cleanup_date != today and now.hour == hour and now.minute >= minute:
+            logger.info(f"Running scheduled cleanup at {cleanup_time_str}")
+            self.last_cleanup_date = today
+            
+            # Run cleanup in background
+            try:
+                result = self.cleanup_manager.cleanup_old_files()
+                if result['cleaned']:
+                    logger.info(f"Cleanup completed: deleted {result['files_deleted']} files, freed {result['space_freed']/(1024*1024):.1f}MB")
+                    # Show notification in status bar
+                    if hasattr(self, 'statusBar'):
+                        self.statusBar().showMessage(f"Storage cleanup: {result['files_deleted']} files deleted", 5000)
+            except Exception as e:
+                logger.error(f"Cleanup failed: {e}")
+    
+    def run_cleanup_now(self):
+        """Run storage cleanup manually"""
+        try:
+            logger.info("Running manual storage cleanup...")
+            result = self.cleanup_manager.cleanup_old_files()
+            
+            if result['cleaned']:
+                msg = f"Cleanup completed!\n\nDeleted {result['files_deleted']} files\nFreed {result['space_freed']/(1024*1024):.1f}MB\nCurrent size: {result['current_size']:.2f}GB"
+                QMessageBox.information(self, "Cleanup Complete", msg)
+            else:
+                msg = f"No cleanup needed.\n\nCurrent size: {result['current_size']:.2f}GB\nLimit: {self.config['storage']['max_size_gb']}GB"
+                QMessageBox.information(self, "Storage OK", msg)
+                
+        except Exception as e:
+            logger.error(f"Manual cleanup failed: {e}")
+            QMessageBox.critical(self, "Cleanup Failed", f"Storage cleanup failed:\n{str(e)}")
+    
     def on_image_captured(self, image_path):
         """Handle image capture"""
         logger.info(f"Image captured: {image_path}")
@@ -3025,6 +3336,10 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'camera_tab'):
             self.camera_tab.on_photo_captured()
             self.camera_tab.on_motion_detected()  # Photo capture means motion was detected
+        
+        # Add to gallery without full reload
+        if hasattr(self, 'gallery_tab'):
+            self.gallery_tab.add_new_image(image_path)
         
         # Queue for upload
         self.uploader.queue_file(image_path)

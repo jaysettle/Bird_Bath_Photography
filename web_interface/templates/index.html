@@ -90,7 +90,16 @@
 
             <!-- Recent Images -->
             <section class="images-section">
-                <h2>Recent Captures</h2>
+                <div class="section-header">
+                    <h2>Recent Captures</h2>
+                    <button id="refresh-images-btn" class="refresh-btn" title="Refresh Recent Captures">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="1 4 1 10 7 10"></polyline>
+                            <polyline points="23 20 23 14 17 14"></polyline>
+                            <path d="m20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4l-4.64 4.36A9 9 0 0 1 3.51 15"></path>
+                        </svg>
+                    </button>
+                </div>
                 <div class="images-grid" id="images-grid">
                     <!-- Images will be loaded here -->
                 </div>
