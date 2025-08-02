@@ -23,9 +23,9 @@ cd Bird_Bath_Photography
 ./install.sh
 python3 main.py
 ```
-camera take a minute to initialize be patient after running python3 main.py
+The Oak camera takes a minute to initialize be patient after running python3 main.py!!
 
-The app automatically creates config.json from the template on first run.
+The app automatically creates your config.json from the template on first run.
 
 ## Setup
 
