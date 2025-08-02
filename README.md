@@ -37,6 +37,7 @@ The app automatically creates your config.json from the template on first run.
    - Google Drive (for cloud backup)
 4. Position camera 3-6 feet from your bird bath
 5. View species on mobile at http://your-pi-ip:8080
+6. If you don't enter OpenAI API, email or Google Drive keys and auth, the app will still work and save to your local directory.
 
 ## Requirements
 
