@@ -89,3 +89,9 @@ Open source - use responsibly for bird conservation and education.
 
 ![Logs Tab](screenshots/logs_tab.png)
 
+<img width="531" height="1174" alt="Mobile1" src="https://github.com/user-attachments/assets/86a6ae5f-9697-4dfa-b98a-3a257069a6cc" />
+
+<img width="550" height="1191" alt="Mobile2" src="https://github.com/user-attachments/assets/62d88ef6-7b30-4862-a2b2-0c81776dcd2a" />
+<img width="1552" height="874" alt="CardinalMolting" src="https://github.com/user-attachments/assets/93119021-0303-467d-8c37-f280f36a2274" />
+<img width="948" height="534" alt="9Birds" src="https://github.com/user-attachments/assets/a51217a2-7472-42f5-883e-d53444430ece" />
+<img width="941" height="1294" alt="PiAndCam" src="https://github.com/user-attachments/assets/2987f250-065f-4709-bccf-55054d20aa80" />
