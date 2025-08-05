@@ -38,6 +38,15 @@ class BirdDetectionWatchdog:
         self.working_dir = str(Path(__file__).parent)
         self.script_path = os.path.join(self.working_dir, "main.py")
         
+        # Detect python path - check virtual environment first, then system python
+        venv_python = os.path.join(self.working_dir, "bird_env", "bin", "python")
+        if os.path.exists(venv_python):
+            self.python_path = venv_python
+            logger.info(f"Using virtual environment Python: {self.python_path}")
+        else:
+            self.python_path = "python3"  # Use system python
+            logger.info(f"Virtual environment not found, using system Python: {self.python_path}")
+        
         # Ensure logs directory exists
         os.makedirs(os.path.join(self.working_dir, "logs"), exist_ok=True)
         
@@ -81,7 +90,7 @@ class BirdDetectionWatchdog:
             
             # Start the application
             self.process = subprocess.Popen(
-                [sys.executable, self.script_path],
+                [self.python_path, self.script_path],
                 cwd=self.working_dir,
                 env=env,
                 stdout=subprocess.PIPE,

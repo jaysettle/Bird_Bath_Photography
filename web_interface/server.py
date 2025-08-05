@@ -47,21 +47,35 @@ def get_images_dir():
 IMAGES_DIR = get_images_dir()
 UPLOAD_LOG = IMAGES_DIR / "drive_uploads.json"
 
-def get_recent_images(limit=20):
-    """Get recent captured images"""
-    images = []
+def get_all_image_files():
+    """Get all image files from root and date folders"""
+    all_images = []
     if IMAGES_DIR.exists():
-        jpeg_files = sorted(IMAGES_DIR.glob("motion_*.jpeg"), 
-                          key=lambda x: x.stat().st_mtime, 
-                          reverse=True)[:limit]
+        # Check root directory for backward compatibility
+        all_images.extend(IMAGES_DIR.glob("motion_*.jpeg"))
         
-        for img in jpeg_files:
-            images.append({
-                'filename': img.name,
-                'path': str(img),
-                'timestamp': datetime.fromtimestamp(img.stat().st_mtime).isoformat(),
-                'size': img.stat().st_size
-            })
+        # Check date folders (YYYY-MM-DD format)
+        for date_folder in IMAGES_DIR.iterdir():
+            if date_folder.is_dir() and len(date_folder.name) == 10 and date_folder.name[4] == '-' and date_folder.name[7] == '-':
+                all_images.extend(date_folder.glob("motion_*.jpeg"))
+    
+    return sorted(all_images, key=lambda x: x.stat().st_mtime, reverse=True)
+
+def get_recent_images(limit=20):
+    """Get recent captured images from date folders"""
+    images = []
+    jpeg_files = get_all_image_files()[:limit]
+    
+    for img in jpeg_files:
+        # Get relative path from IMAGES_DIR for display
+        rel_path = img.relative_to(IMAGES_DIR)
+        images.append({
+            'filename': img.name,
+            'path': str(img),
+            'rel_path': str(rel_path),
+            'timestamp': datetime.fromtimestamp(img.stat().st_mtime).isoformat(),
+            'size': img.stat().st_size
+        })
     return images
 
 def get_system_stats():
@@ -73,8 +87,8 @@ def get_system_stats():
     # Disk usage for images directory
     disk = psutil.disk_usage(str(IMAGES_DIR))
     
-    # Count images
-    total_images = len(list(IMAGES_DIR.glob("motion_*.jpeg"))) if IMAGES_DIR.exists() else 0
+    # Count all images
+    total_images = len(get_all_image_files())
     
     return {
         'cpu_percent': cpu_percent,
@@ -169,12 +183,23 @@ def api_images():
     limit = request.args.get('limit', 20, type=int)
     return jsonify(get_recent_images(limit))
 
-@app.route('/api/image/<filename>')
-def api_image(filename):
-    """Serve an image"""
-    filepath = IMAGES_DIR / filename
-    if filepath.exists() and filepath.suffix == '.jpeg':
+@app.route('/api/image/<path:image_path>')
+def api_image(image_path):
+    """Serve an image (handles both root and date folder paths)"""
+    # First try direct path
+    filepath = IMAGES_DIR / image_path
+    if filepath.exists() and filepath.suffix in ['.jpeg', '.jpg']:
         return send_file(filepath, mimetype='image/jpeg')
+    
+    # If not found and no date folder in path, search date folders
+    if '/' not in image_path:
+        # Search in date folders
+        for date_folder in IMAGES_DIR.iterdir():
+            if date_folder.is_dir() and len(date_folder.name) == 10 and date_folder.name[4] == '-' and date_folder.name[7] == '-':
+                date_filepath = date_folder / image_path
+                if date_filepath.exists() and date_filepath.suffix in ['.jpeg', '.jpg']:
+                    return send_file(date_filepath, mimetype='image/jpeg')
+    
     return jsonify({'error': 'Image not found'}), 404
 
 @app.route('/api/restart', methods=['POST'])
@@ -368,14 +393,11 @@ def api_camera_preview():
     """Get latest camera preview image"""
     try:
         # Get the most recent image
-        if IMAGES_DIR.exists():
-            jpeg_files = sorted(IMAGES_DIR.glob("motion_*.jpeg"), 
-                              key=lambda x: x.stat().st_mtime, 
-                              reverse=True)
-            
-            if jpeg_files:
-                latest_image = jpeg_files[0]
-                return send_file(latest_image, mimetype='image/jpeg')
+        jpeg_files = get_all_image_files()
+        
+        if jpeg_files:
+            latest_image = jpeg_files[0]
+            return send_file(latest_image, mimetype='image/jpeg')
         
         # If no images found, return a placeholder
         return jsonify({'error': 'No preview available'}), 404
@@ -390,19 +412,16 @@ def api_camera_capture():
     try:
         # This would ideally communicate with the main app to trigger a capture
         # For now, we'll just return the latest image info
-        if IMAGES_DIR.exists():
-            jpeg_files = sorted(IMAGES_DIR.glob("motion_*.jpeg"), 
-                              key=lambda x: x.stat().st_mtime, 
-                              reverse=True)
-            
-            if jpeg_files:
-                latest_image = jpeg_files[0]
-                return jsonify({
-                    'success': True,
-                    'filename': latest_image.name,
-                    'timestamp': datetime.fromtimestamp(latest_image.stat().st_mtime).isoformat(),
-                    'message': 'Latest capture available'
-                })
+        jpeg_files = get_all_image_files()
+        
+        if jpeg_files:
+            latest_image = jpeg_files[0]
+            return jsonify({
+                'success': True,
+                'filename': latest_image.name,
+                'timestamp': datetime.fromtimestamp(latest_image.stat().st_mtime).isoformat(),
+                'message': 'Latest capture available'
+            })
         
         return jsonify({
             'success': False,
@@ -423,32 +442,66 @@ def species_page():
 
 @app.route('/api/species')
 def api_species():
-    """Get bird species data"""
+    """Get bird species data with IdentifiedSpecies folder photos"""
     try:
         species_db_path = BASE_DIR / "species_database.json"
+        identified_species_dir = IMAGES_DIR / "IdentifiedSpecies"
+        
+        species_data = {}
+        
         if species_db_path.exists():
             with open(species_db_path, 'r') as f:
                 data = json.load(f)
-                
-            # Calculate summary stats
-            total_species = len(data.get('species', {}))
-            total_sightings = len(data.get('sightings', []))
+                species_data = data.get('species', {})
+        
+        # Enhance species data with IdentifiedSpecies folder photos
+        enhanced_species = {}
+        
+        for scientific_name, species_info in species_data.items():
+            enhanced_info = species_info.copy()
             
-            return jsonify({
-                'success': True,
-                'total_species': total_species,
-                'total_sightings': total_sightings,
-                'species_list': data.get('species', {}),
-                'recent_sightings': data.get('sightings', [])[-10:]  # Last 10 sightings
-            })
-        else:
-            return jsonify({
-                'success': True,
-                'total_species': 0,
-                'total_sightings': 0,
-                'species_list': {},
-                'recent_sightings': []
-            })
+            # Get photos from IdentifiedSpecies folder
+            common_name = species_info.get('common_name', 'Unknown')
+            folder_name = f"{common_name}_{scientific_name}".replace(' ', '_').replace('/', '_')
+            folder_name = ''.join(c for c in folder_name if c.isalnum() or c in ['_', '-'])
+            
+            species_folder = identified_species_dir / folder_name
+            identified_photos = []
+            
+            if species_folder.exists():
+                # Get all JPEG files, sorted by modification time (newest first)
+                photo_files = list(species_folder.glob('*.jpeg'))
+                photo_files.extend(species_folder.glob('*.jpg'))
+                photo_files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+                
+                for photo_file in photo_files:
+                    # Create relative path for web serving
+                    rel_path = f"identified_species/{folder_name}/{photo_file.name}"
+                    identified_photos.append({
+                        'path': rel_path,
+                        'timestamp': photo_file.stat().st_mtime,
+                        'filename': photo_file.name
+                    })
+            
+            enhanced_info['identified_photos'] = identified_photos
+            enhanced_info['photo_count'] = len(identified_photos)
+            enhanced_species[scientific_name] = enhanced_info
+        
+        # Calculate summary stats
+        total_species = len(enhanced_species)
+        total_sightings = 0
+        if species_db_path.exists():
+            with open(species_db_path, 'r') as f:
+                data = json.load(f)
+                total_sightings = len(data.get('sightings', []))
+        
+        return jsonify({
+            'success': True,
+            'total_species': total_species,
+            'total_sightings': total_sightings,
+            'species_list': enhanced_species,
+            'recent_sightings': data.get('sightings', [])[-10:] if 'data' in locals() else []
+        })
             
     except Exception as e:
         logger.error(f"Error getting species data: {e}")
@@ -456,6 +509,19 @@ def api_species():
             'success': False,
             'error': str(e)
         }), 500
+
+@app.route('/identified_species/<species_folder>/<filename>')
+def serve_identified_species_photo(species_folder, filename):
+    """Serve photos from IdentifiedSpecies folder"""
+    try:
+        photo_path = IMAGES_DIR / "IdentifiedSpecies" / species_folder / filename
+        if photo_path.exists():
+            return send_file(photo_path)
+        else:
+            return "Photo not found", 404
+    except Exception as e:
+        logger.error(f"Error serving identified species photo: {e}")
+        return "Error serving photo", 500
 
 def find_available_port(start_port=8080, max_attempts=10):
     """Find an available port starting from start_port"""

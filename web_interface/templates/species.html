@@ -115,6 +115,24 @@
         .status-VU { background-color: #ffeb3b; color: black; }
         .status-EN { background-color: #ff9800; color: white; }
         .status-CR { background-color: #f44336; color: white; }
+        
+        .species-photos {
+            margin: 1rem 0;
+        }
+        
+        .photo-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 0.5rem;
+        }
+        
+        .species-thumb {
+            width: 100%;
+            aspect-ratio: 4/3;
+            object-fit: cover;
+            border-radius: 4px;
+            background-color: var(--bg-card);
+        }
     </style>
 </head>
 <body>
@@ -217,6 +235,16 @@
                                     <div class="stat-label">First Seen</div>
                                 </div>
                             </div>
+                            
+                            ${species.identified_photos && species.identified_photos.length > 0 ? `
+                                <div class="species-photos">
+                                    <div class="photo-grid">
+                                        ${species.identified_photos.slice(0, 3).map(photo => `
+                                            <img src="/${photo.path}" alt="${species.common_name}" loading="lazy" class="species-thumb">
+                                        `).join('')}
+                                    </div>
+                                </div>
+                            ` : ''}
                             
                             <div class="species-info">
                                 ${species.characteristics ? 

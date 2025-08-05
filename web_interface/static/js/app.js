@@ -103,8 +103,8 @@ async function loadImages() {
         const images = await response.json();
         
         elements.imagesGrid.innerHTML = images.map(img => `
-            <div class="image-item" onclick="openImage('${img.filename}', '${img.timestamp}')">
-                <img src="/api/image/${img.filename}" alt="Bird capture" loading="lazy">
+            <div class="image-item" onclick="openImage('${img.rel_path || img.filename}', '${img.timestamp}')">
+                <img src="/api/image/${img.rel_path || img.filename}" alt="Bird capture" loading="lazy">
                 <div class="image-timestamp">${formatTime(img.timestamp)}</div>
             </div>
         `).join('');
@@ -229,9 +229,9 @@ function updateAppStatus(isRunning) {
 }
 
 // Open image in modal
-function openImage(filename, timestamp) {
+function openImage(imagePath, timestamp) {
     elements.modal.style.display = 'block';
-    elements.modalImg.src = `/api/image/${filename}`;
+    elements.modalImg.src = `/api/image/${imagePath}`;
     elements.modalCaption.textContent = `Captured: ${formatTime(timestamp)}`;
 }
 

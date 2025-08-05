@@ -42,21 +42,29 @@ class CleanupManager:
             return 0
     
     def get_file_count(self):
-        """Get total number of files in save directory"""
+        """Get total number of image files in save directory (including subdirectories)"""
         try:
-            jpg_files = glob.glob(os.path.join(self.save_dir, "*.jpg"))
-            jpeg_files = glob.glob(os.path.join(self.save_dir, "*.jpeg"))
-            return len(jpg_files) + len(jpeg_files)
+            total_count = 0
+            for dirpath, dirnames, filenames in os.walk(self.save_dir):
+                for filename in filenames:
+                    if filename.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp')):
+                        total_count += 1
+            return total_count
         except Exception as e:
             logger.error(f"Error counting files: {e}")
             return 0
     
     def get_oldest_files(self, count=None):
-        """Get oldest files sorted by creation time"""
+        """Get oldest files sorted by creation time (including date subdirectories)"""
         try:
-            jpg_files = glob.glob(os.path.join(self.save_dir, "*.jpg"))
-            jpeg_files = glob.glob(os.path.join(self.save_dir, "*.jpeg"))
-            all_files = jpg_files + jpeg_files
+            all_files = []
+            
+            # Walk through all subdirectories to find image files
+            for dirpath, dirnames, filenames in os.walk(self.save_dir):
+                for filename in filenames:
+                    if filename.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp')):
+                        filepath = os.path.join(dirpath, filename)
+                        all_files.append(filepath)
             
             # Sort by creation time (oldest first)
             all_files.sort(key=lambda x: os.path.getctime(x))
@@ -159,16 +167,21 @@ class CleanupManager:
             logger.error(f"Error emptying trash: {e}")
     
     def cleanup_by_age(self, days_old=7):
-        """Clean up files older than specified days"""
+        """Clean up files older than specified days (including date subdirectories)"""
         try:
             cutoff_date = datetime.now() - timedelta(days=days_old)
             
-            jpg_files = glob.glob(os.path.join(self.save_dir, "*.jpg"))
-            jpeg_files = glob.glob(os.path.join(self.save_dir, "*.jpeg"))
-            all_files = jpg_files + jpeg_files
+            all_files = []
+            # Walk through all subdirectories to find image files
+            for dirpath, dirnames, filenames in os.walk(self.save_dir):
+                for filename in filenames:
+                    if filename.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp')):
+                        filepath = os.path.join(dirpath, filename)
+                        all_files.append(filepath)
             
             files_deleted = 0
             space_freed = 0
+            empty_dirs = set()
             
             for file_path in all_files:
                 try:
@@ -176,14 +189,32 @@ class CleanupManager:
                     
                     if file_time < cutoff_date:
                         file_size = os.path.getsize(file_path)
+                        parent_dir = os.path.dirname(file_path)
                         os.remove(file_path)
                         files_deleted += 1
                         space_freed += file_size
+                        
+                        # Track potentially empty directories
+                        empty_dirs.add(parent_dir)
                         
                         logger.info(f"Deleted old file: {os.path.basename(file_path)}")
                         
                 except Exception as e:
                     logger.error(f"Error deleting old file {file_path}: {e}")
+            
+            # Clean up empty date directories
+            for dir_path in empty_dirs:
+                try:
+                    if dir_path != self.save_dir and os.path.isdir(dir_path):
+                        # Check if directory is empty (only contains non-image files like .json)
+                        remaining_images = [f for f in os.listdir(dir_path) 
+                                         if f.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp'))]
+                        if not remaining_images:
+                            logger.info(f"Removing empty date directory: {os.path.basename(dir_path)}")
+                            import shutil
+                            shutil.rmtree(dir_path)
+                except Exception as e:
+                    logger.error(f"Error removing empty directory {dir_path}: {e}")
             
             logger.info(f"Age cleanup completed - deleted {files_deleted} files older than {days_old} days")
             

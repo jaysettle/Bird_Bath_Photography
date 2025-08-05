@@ -9,7 +9,7 @@ import json
 import time
 import threading
 import subprocess
-from datetime import datetime
+from datetime import datetime, date, timedelta
 from pathlib import Path
 
 # Add src to path
@@ -200,15 +200,29 @@ class InteractivePreviewLabel(QLabel):
     
     def __init__(self):
         super().__init__()
-        # Natural camera preview dimensions (no scaling/stretching)
-        self.setFixedSize(600, 400)  # Natural camera preview size
-        self.setStyleSheet("border: 2px solid #555555; background-color: #252525;")
+        # Default camera preview dimensions
+        self.base_width = 600
+        self.base_height = 400
+        self.aspect_ratio = self.base_width / self.base_height
+        
+        # Zoom functionality
+        self.zoom_factor = 1.0
+        self.min_zoom = 0.5
+        self.max_zoom = 3.0
+        self.zoom_step = 0.1
+        self.current_width = self.base_width
+        self.current_height = self.base_height
+        
+        self.setFixedSize(self.base_width, self.base_height)
+        self.setStyleSheet("border: 2px solid #555555; background-color: #252525; border-radius: 6px;")
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setText("Camera Preview")
         self.setScaledContents(False)  # No scaling - show at natural size
         
         # ROI selection state
         self.drawing = False
+        self.has_dragged = False
+        self.potential_roi_start = QPoint()
         self.roi_start = QPoint()
         self.roi_end = QPoint()
         self.roi_rect = QRect()
@@ -224,6 +238,82 @@ class InteractivePreviewLabel(QLabel):
         self.right_button_pressed = False
         self.right_click_start = None
         self.drag_threshold = 5  # pixels
+    
+    def scale_for_fullscreen(self, is_fullscreen=False):
+        """Scale the preview size based on window state"""
+        if is_fullscreen:
+            # Scale up to 1.5x size in fullscreen
+            self.base_width = 900
+            self.base_height = 600
+        else:
+            # Use base size for windowed mode
+            self.base_width = 600
+            self.base_height = 400
+        
+        # Apply current zoom to new base size
+        self.update_size()
+        logger.debug(f"Preview base scaled to {self.base_width}x{self.base_height} (fullscreen: {is_fullscreen})")
+    
+    def wheelEvent(self, event):
+        """Handle mouse wheel for zooming"""
+        # Get wheel delta
+        delta = event.angleDelta().y()
+        
+        if delta > 0:
+            # Zoom in
+            new_zoom = min(self.zoom_factor + self.zoom_step, self.max_zoom)
+        else:
+            # Zoom out
+            new_zoom = max(self.zoom_factor - self.zoom_step, self.min_zoom)
+        
+        if new_zoom != self.zoom_factor:
+            self.zoom_factor = new_zoom
+            self.update_size()
+            logger.debug(f"Zoom changed to {self.zoom_factor:.1f}x")
+    
+    def update_size(self):
+        """Update the widget size based on current zoom factor"""
+        old_width = getattr(self, 'current_width', self.base_width)
+        old_height = getattr(self, 'current_height', self.base_height)
+        
+        self.current_width = int(self.base_width * self.zoom_factor)
+        self.current_height = int(self.base_height * self.zoom_factor)
+        self.setFixedSize(self.current_width, self.current_height)
+        
+        # Scale ROI if it exists and size changed
+        if not self.roi_rect.isEmpty() and (old_width != self.current_width or old_height != self.current_height):
+            self.scale_roi(old_width, old_height, self.current_width, self.current_height)
+    
+    def reset_zoom(self):
+        """Reset zoom to 1.0x"""
+        self.zoom_factor = 1.0
+        self.update_size()
+        logger.info("Preview zoom reset to 1.0x")
+    
+    def scale_roi(self, old_width, old_height, new_width, new_height):
+        """Scale ROI coordinates when preview size changes"""
+        if not self.roi_rect.isEmpty():
+            # Calculate scaling factors
+            scale_x = new_width / old_width
+            scale_y = new_height / old_height
+            
+            # Scale ROI rectangle
+            scaled_x = int(self.roi_rect.x() * scale_x)
+            scaled_y = int(self.roi_rect.y() * scale_y)
+            scaled_width = int(self.roi_rect.width() * scale_x)
+            scaled_height = int(self.roi_rect.height() * scale_y)
+            
+            # Update ROI rectangle
+            old_rect = self.roi_rect
+            self.roi_rect = QRect(scaled_x, scaled_y, scaled_width, scaled_height)
+            
+            # Trigger repaint to show updated ROI
+            self.update()
+            
+            # Emit signal to update camera controller with new coordinates
+            self.roi_selected.emit(QPoint(scaled_x, scaled_y), QPoint(scaled_x + scaled_width, scaled_y + scaled_height))
+            
+            logger.debug(f"ROI scaled from {old_rect} to {self.roi_rect} (preview: {old_width}x{old_height} -> {new_width}x{new_height})")
         
     def heightForWidth(self, width):
         """Maintain 16:9 aspect ratio (locked)"""
@@ -232,10 +322,10 @@ class InteractivePreviewLabel(QLabel):
     def mousePressEvent(self, event):
         """Handle mouse press for ROI selection or focus control"""
         if event.button() == Qt.MouseButton.LeftButton:
-            self.drawing = True
-            self.roi_start = event.pos()
-            self.roi_end = event.pos()
-            self.update()
+            # Store the start position but don't start drawing yet
+            # Only draw if there's a significant drag
+            self.potential_roi_start = event.pos()
+            self.has_dragged = False
         elif event.button() == Qt.MouseButton.RightButton:
             # Right-click for focus control - track for drag detection
             self.right_button_pressed = True
@@ -244,19 +334,42 @@ class InteractivePreviewLabel(QLabel):
             
     def mouseMoveEvent(self, event):
         """Handle mouse move for ROI selection"""
-        if self.drawing:
-            self.roi_end = event.pos()
-            self.update()
+        if event.buttons() & Qt.MouseButton.LeftButton and hasattr(self, 'potential_roi_start'):
+            # Check if we've dragged far enough to start ROI drawing
+            if not self.drawing:
+                distance = ((event.pos().x() - self.potential_roi_start.x()) ** 2 + 
+                           (event.pos().y() - self.potential_roi_start.y()) ** 2) ** 0.5
+                if distance > 10:  # Require at least 10 pixel drag to start drawing
+                    self.drawing = True
+                    self.has_dragged = True
+                    self.roi_start = self.potential_roi_start
+                    self.roi_end = event.pos()
+                    self.update()
+            else:
+                # Already drawing, update endpoint
+                self.roi_end = event.pos()
+                self.update()
     
     def mouseReleaseEvent(self, event):
         """Handle mouse release events"""
-        if event.button() == Qt.MouseButton.LeftButton and self.drawing:
-            self.drawing = False
-            self.roi_end = event.pos()
-            self.update()
-            
-            # Emit ROI selected signal
-            self.roi_selected.emit(self.roi_start, self.roi_end)
+        if event.button() == Qt.MouseButton.LeftButton:
+            if self.drawing:
+                # We were drawing an ROI
+                self.drawing = False
+                self.roi_end = event.pos()
+                self.update()
+                
+                # Only emit ROI if the drawn area is significant
+                width = abs(self.roi_end.x() - self.roi_start.x())
+                height = abs(self.roi_end.y() - self.roi_start.y())
+                if width > 20 and height > 20:  # Minimum 20x20 pixel ROI
+                    # Emit ROI selected signal
+                    self.roi_selected.emit(self.roi_start, self.roi_end)
+                else:
+                    # Too small, don't change ROI
+                    self.update()
+            # Reset drag tracking
+            self.has_dragged = False
             
         elif event.button() == Qt.MouseButton.RightButton and self.right_button_pressed:
             self.right_button_pressed = False
@@ -301,18 +414,7 @@ class InteractivePreviewLabel(QLabel):
                 temp_rect = QRect(self.roi_start, self.roi_end)
                 painter.drawRect(temp_rect.normalized())
             
-            # Draw focus click indicator
-            if self.focus_click_point:
-                # Draw crosshair at click point
-                painter.setPen(QPen(QColor(255, 0, 255), 3))  # Magenta for focus
-                x = self.focus_click_point.x()
-                y = self.focus_click_point.y()
-                painter.drawLine(x - 20, y, x + 20, y)
-                painter.drawLine(x, y - 20, x, y + 20)
-                
-                # Draw circle
-                painter.setPen(QPen(QColor(255, 0, 255), 2))
-                painter.drawEllipse(self.focus_click_point, 15, 15)
+            # Focus click indicator removed per user request
                 
             painter.end()
     
@@ -330,6 +432,11 @@ class InteractivePreviewLabel(QLabel):
     def clear_roi(self):
         """Clear the ROI rectangle"""
         self.roi_rect = QRect()
+        self.drawing = False  # Reset drawing state
+        self.has_dragged = False
+        self.potential_roi_start = QPoint()
+        self.roi_start = QPoint()
+        self.roi_end = QPoint()
         self.update()
     
     def set_roi_rect(self, x, y, width, height):
@@ -617,25 +724,26 @@ class CameraTab(QWidget):
         motion_layout.setSpacing(2)
         motion_layout.setContentsMargins(5, 5, 5, 5)
         
-        # Sensitivity slider
-        motion_layout.addWidget(QLabel("Sensitivity:"), 0, 0)
+        # Sensitivity slider with clarification
+        sensitivity_label = QLabel("Sensitivity:")
+        sensitivity_label.setToolTip("Higher values = MORE sensitive (detects smaller movements)\nLower values = LESS sensitive (ignores small movements)")
+        motion_layout.addWidget(sensitivity_label, 0, 0)
+        
         self.sensitivity_slider = QSlider(Qt.Orientation.Horizontal)
         self.sensitivity_slider.setRange(10, 100)
         self.sensitivity_slider.setValue(50)
         self.sensitivity_slider.valueChanged.connect(self.on_sensitivity_changed)
         motion_layout.addWidget(self.sensitivity_slider, 0, 1)
-        self.sensitivity_value = QLabel("50")
+        
+        self.sensitivity_value = QLabel("60")  # Display inverted initial value
         motion_layout.addWidget(self.sensitivity_value, 0, 2)
         
-        # Min area slider
-        motion_layout.addWidget(QLabel("Min Area:"), 1, 0)
-        self.min_area_slider = QSlider(Qt.Orientation.Horizontal)
-        self.min_area_slider.setRange(100, 2000)
-        self.min_area_slider.setValue(500)
-        self.min_area_slider.valueChanged.connect(self.on_min_area_changed)
-        motion_layout.addWidget(self.min_area_slider, 1, 1)
-        self.min_area_value = QLabel("500")
-        motion_layout.addWidget(self.min_area_value, 1, 2)
+        # Add clarification text
+        sensitivity_hint = QLabel("← Less Sensitive | More Sensitive →")
+        sensitivity_hint.setStyleSheet("font-size: 9px; color: #888;")
+        sensitivity_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        motion_layout.addWidget(sensitivity_hint, 1, 1)
+        
         
         # ROI buttons
         roi_layout = QHBoxLayout()
@@ -647,7 +755,13 @@ class CameraTab(QWidget):
         self.clear_roi_btn.clicked.connect(self.on_clear_roi)
         roi_layout.addWidget(self.clear_roi_btn)
         
-        motion_layout.addLayout(roi_layout, 2, 0, 1, 3)
+        # Add reset zoom button
+        self.reset_zoom_btn = QPushButton("Reset Zoom")
+        self.reset_zoom_btn.setToolTip("Reset camera preview zoom to 1.0x\n(Use mouse wheel on preview to zoom)")
+        self.reset_zoom_btn.clicked.connect(self.on_reset_zoom)
+        roi_layout.addWidget(self.reset_zoom_btn)
+        
+        motion_layout.addLayout(roi_layout, 3, 0, 1, 3)
         
         motion_group.setLayout(motion_layout)
         left_layout.addWidget(motion_group)
@@ -903,18 +1017,18 @@ class CameraTab(QWidget):
     
     def on_sensitivity_changed(self, value):
         """Handle sensitivity slider change"""
-        self.sensitivity_value.setText(str(value))
+        # Display the inverted value (higher = more sensitive)
+        display_value = 110 - value  # Convert range 10-100 to 100-10
+        self.sensitivity_value.setText(str(display_value))
+        # Use original value for motion detection (lower = more sensitive)
         self.camera_controller.motion_detector.update_settings(threshold=value)
     
-    def on_min_area_changed(self, value):
-        """Handle min area slider change"""
-        self.min_area_value.setText(str(value))
-        self.camera_controller.motion_detector.update_settings(min_area=value)
     
     def on_roi_selected(self, start_point, end_point):
         """Handle ROI selection from preview label"""
         if start_point.x() == -1:  # Clear ROI
             self.camera_controller.clear_roi()
+            self.preview_label.clear_roi()
             logger.info("ROI cleared")
         else:
             # Convert preview coordinates to actual coordinates
@@ -923,6 +1037,13 @@ class CameraTab(QWidget):
                 (start_point.x(), start_point.y()),
                 (end_point.x(), end_point.y())
             )
+            
+            # Update the visual ROI rectangle on the preview
+            roi_rect = QRect(start_point, end_point).normalized()
+            self.preview_label.roi_rect = roi_rect
+            self.preview_label.update()
+            
+            logger.info(f"ROI set: {start_point} to {end_point}")
     
     def on_focus_point_clicked(self, point):
         """Handle right-click focus adjustment based on position"""
@@ -961,8 +1082,15 @@ class CameraTab(QWidget):
     
     def on_set_roi(self):
         """Set ROI for motion detection"""
-        # This button now just provides instructions
+        # This button now just provides instructions and visual feedback
         logger.info("Click and drag on the preview to set ROI")
+        
+        # Show message box with instructions
+        QMessageBox.information(self, "Set ROI", 
+                               "Click and drag on the camera preview to draw a rectangle for motion detection.\n\n"
+                               "• Left-click and drag to select an area\n"
+                               "• The area will be highlighted in green\n"
+                               "• Use 'Clear ROI' to remove the current selection")
     
     def on_clear_roi(self):
         """Clear ROI"""
@@ -970,15 +1098,33 @@ class CameraTab(QWidget):
         self.preview_label.clear_roi()
         logger.info("ROI cleared")
     
+    def on_reset_zoom(self):
+        """Reset camera preview zoom to 1.0x"""
+        self.preview_label.reset_zoom()
+        logger.info("Camera preview zoom reset")
+    
     def load_default_roi(self):
-        """Load default ROI from config and scale to current preview size"""
+        """Load ROI from config and scale to current preview size"""
         try:
             config_path = os.path.join(os.path.dirname(__file__), 'config.json')
             with open(config_path, 'r') as f:
                 config = json.load(f)
             
-            roi_config = config.get('motion_detection', {}).get('default_roi', {})
-            if roi_config.get('enabled', False):
+            motion_config = config.get('motion_detection', {})
+            
+            # First try to load current_roi (user-drawn ROI)
+            roi_config = motion_config.get('current_roi', {})
+            if roi_config:
+                logger.info("Loading saved current ROI")
+            else:
+                # Fallback to default_roi if no current_roi exists
+                roi_config = motion_config.get('default_roi', {})
+                logger.info("Loading default ROI")
+            # Check if ROI should be loaded (enabled for default_roi, or any current_roi)
+            should_load = (roi_config.get('enabled', False) or 
+                          ('current_roi' in motion_config and roi_config))
+            
+            if should_load and roi_config:
                 # Original ROI coordinates from config
                 orig_x = roi_config.get('x', 0)
                 orig_y = roi_config.get('y', 0)
@@ -1050,8 +1196,11 @@ class CameraTab(QWidget):
             
             # Load motion detection settings
             motion_config = self.config.get('motion_detection', {})
-            self.sensitivity_slider.setValue(motion_config.get('threshold', 50))
-            self.min_area_slider.setValue(motion_config.get('min_area', 500))
+            threshold_value = motion_config.get('threshold', 50)
+            self.sensitivity_slider.setValue(threshold_value)
+            # Update display with inverted value
+            display_value = 110 - threshold_value
+            self.sensitivity_value.setText(str(display_value))
             
             logger.info("Camera settings loaded from config")
         except Exception as e:
@@ -1060,16 +1209,68 @@ class CameraTab(QWidget):
     def on_save_settings(self):
         """Save current settings"""
         try:
-            # Update config with current camera settings
-            self.config['camera']['focus'] = self.focus_slider.value()
-            self.config['camera']['exposure_ms'] = self.exposure_slider.value()
-            self.config['camera']['white_balance'] = self.wb_slider.value()
-            self.config['camera']['iso_min'] = self.iso_min_slider.value()
-            self.config['camera']['iso_max'] = self.iso_max_slider.value()
+            # Track what changed
+            changes = []
             
-            # Update motion detection settings
-            self.config['motion_detection']['threshold'] = self.sensitivity_slider.value()
-            self.config['motion_detection']['min_area'] = self.min_area_slider.value()
+            # Check camera settings changes
+            old_focus = self.config['camera'].get('focus', 128)
+            new_focus = self.focus_slider.value()
+            if old_focus != new_focus:
+                changes.append(f"• Focus: {old_focus} → {new_focus}")
+            
+            old_exposure = self.config['camera'].get('exposure_ms', 20)
+            new_exposure = self.exposure_slider.value()
+            if old_exposure != new_exposure:
+                changes.append(f"• Exposure: {old_exposure}ms → {new_exposure}ms")
+            
+            old_wb = self.config['camera'].get('white_balance', 6637)
+            new_wb = self.wb_slider.value()
+            if old_wb != new_wb:
+                changes.append(f"• White Balance: {old_wb}K → {new_wb}K")
+            
+            old_iso_min = self.config['camera'].get('iso_min', 100)
+            new_iso_min = self.iso_min_slider.value()
+            if old_iso_min != new_iso_min:
+                changes.append(f"• ISO Min: {old_iso_min} → {new_iso_min}")
+            
+            old_iso_max = self.config['camera'].get('iso_max', 800)
+            new_iso_max = self.iso_max_slider.value()
+            if old_iso_max != new_iso_max:
+                changes.append(f"• ISO Max: {old_iso_max} → {new_iso_max}")
+            
+            # Check motion detection changes
+            old_threshold = self.config['motion_detection'].get('threshold', 50)
+            new_threshold = self.sensitivity_slider.value()
+            if old_threshold != new_threshold:
+                changes.append(f"• Motion Threshold: {old_threshold} → {new_threshold}")
+            
+            
+            # Update config with current values
+            self.config['camera']['focus'] = new_focus
+            self.config['camera']['exposure_ms'] = new_exposure
+            self.config['camera']['white_balance'] = new_wb
+            self.config['camera']['iso_min'] = new_iso_min
+            self.config['camera']['iso_max'] = new_iso_max
+            self.config['motion_detection']['threshold'] = new_threshold
+            
+            # Save current ROI settings if defined
+            roi_changed = False
+            if self.camera_controller.roi_defined:
+                roi_rect = self.preview_label.roi_rect
+                if not roi_rect.isEmpty():
+                    new_roi = {
+                        'x': roi_rect.x(),
+                        'y': roi_rect.y(),
+                        'width': roi_rect.width(),
+                        'height': roi_rect.height()
+                    }
+                    old_roi = self.config['motion_detection'].get('current_roi', {})
+                    if old_roi != new_roi:
+                        changes.append(f"• ROI: Updated to ({roi_rect.x()}, {roi_rect.y()}, {roi_rect.width()}x{roi_rect.height()})")
+                        roi_changed = True
+                    
+                    self.config['motion_detection']['current_roi'] = new_roi
+                    logger.info(f"Saving ROI: {roi_rect}")
             
             # Save to file
             config_path = os.path.join(
@@ -1081,12 +1282,163 @@ class CameraTab(QWidget):
             
             logger.info("Settings saved to config.json")
             
-            # Settings will be applied automatically through the slider change events
-            # when the camera controller reads the config on next connect
-            logger.info("Camera settings will be applied on next camera connection")
+            # Show success message with changes
+            if changes:
+                message = "Camera settings saved successfully!\n\nChanges made:\n" + "\n".join(changes)
+            else:
+                message = "Camera settings saved successfully!\n\nNo changes detected - all settings remain the same."
+            
+            QMessageBox.information(self, "Settings Saved", message)
+            
+            # Settings are applied immediately via slider change events
             
         except Exception as e:
             logger.error(f"Failed to save settings: {e}")
+            QMessageBox.critical(self, "Save Failed", f"Failed to save settings:\n{str(e)}")
+
+class ImageViewerDialog(QDialog):
+    """Full-size image viewer dialog with keyboard navigation"""
+    
+    def __init__(self, parent, current_image_path, all_image_paths):
+        super().__init__(parent)
+        self.current_image_path = str(current_image_path)
+        self.all_image_paths = [str(p) for p in all_image_paths]
+        self.current_index = self.all_image_paths.index(self.current_image_path)
+        
+        self.setWindowTitle(Path(current_image_path).name)
+        self.setModal(True)
+        
+        # Start maximized for better image viewing
+        self.showMaximized()
+        
+        # Main layout
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        
+        # Image label - make it expand to fill available space
+        self.image_label = QLabel()
+        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.image_label.setMinimumSize(600, 400)
+        self.image_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        layout.addWidget(self.image_label, 1)  # Give it stretch factor of 1
+        
+        # Navigation info
+        self.nav_label = QLabel()
+        self.nav_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.nav_label.setStyleSheet("color: #888; padding: 5px;")
+        layout.addWidget(self.nav_label)
+        
+        # Button layout
+        button_layout = QHBoxLayout()
+        
+        # Previous button
+        self.prev_btn = QPushButton("← Previous")
+        self.prev_btn.clicked.connect(self.show_previous)
+        button_layout.addWidget(self.prev_btn)
+        
+        # Close button
+        close_btn = QPushButton("Close (Esc)")
+        close_btn.clicked.connect(self.close)
+        button_layout.addWidget(close_btn)
+        
+        # Next button
+        self.next_btn = QPushButton("Next →")
+        self.next_btn.clicked.connect(self.show_next)
+        button_layout.addWidget(self.next_btn)
+        
+        layout.addLayout(button_layout)
+        
+        # Load initial image
+        self.load_current_image()
+        
+        # Set minimum size
+        self.setMinimumSize(800, 600)
+        
+        # Store original pixmap for resizing
+        self.original_pixmap = None
+        
+    def keyPressEvent(self, event):
+        """Handle keyboard navigation"""
+        if event.key() == Qt.Key.Key_Left:
+            self.show_previous()
+        elif event.key() == Qt.Key.Key_Right:
+            self.show_next()
+        elif event.key() == Qt.Key.Key_Escape:
+            self.close()
+        else:
+            super().keyPressEvent(event)
+    
+    def resizeEvent(self, event):
+        """Handle window resize - rescale image to fit new size"""
+        super().resizeEvent(event)
+        if hasattr(self, 'original_pixmap') and self.original_pixmap:
+            # Delay the rescaling slightly to avoid flickering during resize
+            QTimer.singleShot(50, self.scale_and_display_image)
+    
+    def scale_and_display_image(self):
+        """Scale and display the current image to fit available space"""
+        if not self.original_pixmap:
+            return
+            
+        try:
+            # Get available space, accounting for margins and buttons
+            available_size = self.image_label.size()
+            
+            # Account for margins - leave some padding
+            max_width = max(available_size.width() - 40, 600)
+            max_height = max(available_size.height() - 40, 400)
+            
+            # Scale image to fit available space while preserving aspect ratio
+            if (self.original_pixmap.width() > max_width or 
+                self.original_pixmap.height() > max_height):
+                scaled_pixmap = self.original_pixmap.scaled(
+                    max_width, max_height, 
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation)
+            else:
+                # Show at original size if it fits
+                scaled_pixmap = self.original_pixmap
+            
+            self.image_label.setPixmap(scaled_pixmap)
+            
+        except Exception as e:
+            logger.error(f"Error scaling image: {e}")
+    
+    def load_current_image(self):
+        """Load and display the current image"""
+        try:
+            # Load the original pixmap
+            self.original_pixmap = QPixmap(self.current_image_path)
+            
+            # Scale and display it
+            self.scale_and_display_image()
+            
+            # Update window title and navigation info
+            filename = Path(self.current_image_path).name
+            self.setWindowTitle(filename)
+            self.nav_label.setText(f"Image {self.current_index + 1} of {len(self.all_image_paths)} | Use arrow keys to navigate")
+            
+            # Update button states
+            self.prev_btn.setEnabled(self.current_index > 0)
+            self.next_btn.setEnabled(self.current_index < len(self.all_image_paths) - 1)
+            
+        except Exception as e:
+            logger.error(f"Error loading image: {e}")
+            self.image_label.setText("Error loading image")
+    
+    def show_previous(self):
+        """Show previous image"""
+        if self.current_index > 0:
+            self.current_index -= 1
+            self.current_image_path = self.all_image_paths[self.current_index]
+            self.load_current_image()
+    
+    def show_next(self):
+        """Show next image"""
+        if self.current_index < len(self.all_image_paths) - 1:
+            self.current_index += 1
+            self.current_image_path = self.all_image_paths[self.current_index]
+            self.load_current_image()
 
 class GalleryLoader(QThread):
     """Background thread for loading gallery images"""
@@ -1179,14 +1531,33 @@ class GalleryTab(QWidget):
         self.images_by_date = {}
         self.date_widgets = {}
         self.gallery_items = []
+        self.loaded_dates = set()  # Track which dates have been loaded
+        self.today_date = datetime.now().strftime('%Y-%m-%d')
+        self.current_focus_index = -1  # Track currently focused item for arrow navigation
         self.setup_ui()
-        self.load_photos()
+        
+        # Mark that gallery hasn't been loaded yet (lazy loading)
+        self.gallery_loaded = False
+        
+        # Log configuration details
+        storage_config = self.config.get('storage', {})
+        save_dir = storage_config.get('save_dir', str(Path.home() / 'BirdPhotos'))
+        logger.info(f"Gallery initialized - Storage config: {storage_config}")
+        logger.info(f"Gallery will look for photos in: {save_dir}")
+        logger.info(f"Today's date for gallery: {self.today_date}")
+        
+        # Setup timer to check for new images in today's folder only
+        self.new_image_timer = QTimer()
+        self.new_image_timer.timeout.connect(self.check_for_new_images)
+        self.new_image_timer.start(10000)  # Check every 10 seconds
     
     def closeEvent(self, event):
         """Clean up when gallery tab is closed"""
         if self.loader_thread and self.loader_thread.isRunning():
             self.loader_thread.stop()
             self.loader_thread.wait(1000)  # Wait up to 1 second
+        if hasattr(self, 'new_image_timer'):
+            self.new_image_timer.stop()
         super().closeEvent(event)
         
     def setup_ui(self):
@@ -1197,7 +1568,7 @@ class GalleryTab(QWidget):
         
         # Refresh button
         self.refresh_btn = QPushButton("Refresh")
-        self.refresh_btn.clicked.connect(self.load_photos)
+        self.refresh_btn.clicked.connect(self.refresh_gallery)
         toolbar_layout.addWidget(self.refresh_btn)
         
         # Selection info
@@ -1235,6 +1606,9 @@ class GalleryTab(QWidget):
         self.scroll_area.setWidgetResizable(True)
         layout.addWidget(self.scroll_area)
         
+        # Connect scroll event for lazy loading
+        self.scroll_area.verticalScrollBar().valueChanged.connect(self.on_scroll_changed)
+        
         # Status label at bottom
         self.status_label = QLabel("Ready")
         self.status_label.setStyleSheet("QLabel { color: #666; padding: 5px; }")
@@ -1242,6 +1616,15 @@ class GalleryTab(QWidget):
         
         # Enable keyboard shortcuts
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+    
+    def set_status_message(self, message, color=None):
+        """Set status message with optional color"""
+        self.status_label.setText(message)
+        if color:
+            self.status_label.setStyleSheet(f"QLabel {{ color: {color}; padding: 5px; }}")
+        else:
+            # Reset to default gray
+            self.status_label.setStyleSheet("QLabel { color: #666; padding: 5px; }")
         
     def keyPressEvent(self, event):
         """Handle keyboard events"""
@@ -1253,91 +1636,607 @@ class GalleryTab(QWidget):
         elif event.key() == Qt.Key.Key_Escape:
             # Clear selection
             self.clear_selection()
+        elif event.key() == Qt.Key.Key_Left:
+            # Navigate to previous image
+            self.navigate_image(-1)
+        elif event.key() == Qt.Key.Key_Right:
+            # Navigate to next image
+            self.navigate_image(1)
+        else:
+            # Call parent implementation for other keys
+            super().keyPressEvent(event)
+    
+    def navigate_image(self, direction):
+        """Navigate through gallery images with arrow keys"""
+        if not self.gallery_items:
+            return
+        
+        # If no current focus, start with first item
+        if self.current_focus_index == -1:
+            self.current_focus_index = 0
+        else:
+            # Move focus in the specified direction
+            new_index = self.current_focus_index + direction
+            # Wrap around at boundaries
+            if new_index < 0:
+                new_index = len(self.gallery_items) - 1
+            elif new_index >= len(self.gallery_items):
+                new_index = 0
+            self.current_focus_index = new_index
+        
+        # Update visual focus and scroll to item
+        self.update_focus_highlight()
+        self.scroll_to_focused_item()
+        
+        logger.debug(f"Navigated to image {self.current_focus_index + 1} of {len(self.gallery_items)}")
+    
+    def update_focus_highlight(self):
+        """Update the visual highlight for the currently focused item"""
+        # Remove highlight from all items
+        for i, (path, widget) in enumerate(self.gallery_items):
+            if i == self.current_focus_index:
+                # Add highlight to focused item
+                widget.setStyleSheet("""
+                    QWidget {
+                        border: 3px solid #4CAF50;
+                        border-radius: 8px;
+                        background-color: rgba(76, 175, 80, 0.1);
+                    }
+                """)
+            else:
+                # Remove highlight from non-focused items
+                widget.setStyleSheet("""
+                    QWidget {
+                        border: 1px solid #444;
+                        border-radius: 8px;
+                        background-color: #2b2b2b;
+                    }
+                """)
+    
+    def scroll_to_focused_item(self):
+        """Scroll the gallery to show the currently focused item"""
+        if self.current_focus_index >= 0 and self.current_focus_index < len(self.gallery_items):
+            path, widget = self.gallery_items[self.current_focus_index]
+            # Ensure the widget is visible in the scroll area
+            self.scroll_area.ensureWidgetVisible(widget)
+    
+    def on_image_clicked(self, image_path):
+        """Handle image click - set focus and show full image"""
+        # Find the index of the clicked image
+        for i, (path, widget) in enumerate(self.gallery_items):
+            if path == image_path:
+                self.current_focus_index = i
+                break
+        
+        # Update visual focus
+        self.update_focus_highlight()
+        
+        # Set focus to the gallery tab for keyboard navigation
+        self.setFocus()
+        
+        # Show full image
+        self.show_full_image(image_path)
+        
+        logger.debug(f"Image clicked: {image_path}, focus set to index {self.current_focus_index}")
             
-    def add_new_image(self, image_path):
-        """Add a single new image to the gallery without full reload"""
+    
+    def refresh_gallery(self):
+        """Refresh the gallery - reload all loaded dates"""
+        try:
+            logger.info("Gallery refresh button clicked")
+            self.set_status_message("Refreshing gallery...", "#ffcc00")
+            
+            # Show progress bar
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setValue(0)
+            self.progress_bar.setFormat("Refreshing gallery...")
+            
+            # Count images before refresh
+            old_total_images = sum(len(images) for images in self.images_by_date.values())
+            logger.info(f"Images before refresh: {old_total_images}")
+            
+            # If gallery was never loaded, just load today's photos
+            if not self.gallery_loaded:
+                logger.info("Gallery never loaded, loading today's photos")
+                self.load_today_photos()
+                self.gallery_loaded = True
+                return
+            
+            # Clear current display
+            self.clear_gallery()
+            self.images_by_date.clear()
+            self.date_widgets.clear()
+            self.gallery_items.clear()
+            self.selected_items.clear()
+            self.current_focus_index = -1  # Reset focus
+            self.update_selection_label()
+            
+            # Reload all previously loaded dates
+            loaded_dates_copy = self.loaded_dates.copy()
+            self.loaded_dates.clear()
+            logger.info(f"Reloading dates: {loaded_dates_copy}")
+            
+            storage_dir = Path(self.config.get('storage', {}).get('save_dir', 
+                                               str(Path.home() / 'BirdPhotos')))
+            
+            if storage_dir.exists():
+                # Reload each date that was previously loaded
+                for date_str in sorted(loaded_dates_copy, reverse=True):
+                    date_folder = storage_dir / date_str
+                    if date_folder.exists() and date_folder.is_dir():
+                        logger.info(f"Reloading date: {date_str}")
+                        self.load_date_folder(date_str, date_folder)
+                        self.loaded_dates.add(date_str)
+            
+            # Check if we should auto-load yesterday (if today has < 16 photos)
+            today_count = len(self.images_by_date.get(self.today_date, []))
+            yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+            
+            logger.info(f"Refresh auto-load check: today_count={today_count}, yesterday='{yesterday}', loaded_dates={self.loaded_dates}")
+            
+            if today_count > 0 and today_count < 16 and yesterday not in self.loaded_dates:
+                yesterday_folder = storage_dir / yesterday
+                logger.info(f"Checking yesterday folder: {yesterday_folder}, exists={yesterday_folder.exists()}")
+                if yesterday_folder.exists() and yesterday_folder.is_dir():
+                    logger.info(f"Auto-loading yesterday's photos (today has only {today_count})...")
+                    self.set_status_message(f"Loading more photos (today has only {today_count})...", "#ffcc00")
+                    self.progress_bar.setFormat("Loading yesterday's photos...")
+                    QApplication.processEvents()  # Force UI update
+                    
+                    # Load yesterday's photos
+                    self.load_date_folder(yesterday, yesterday_folder)
+                    self.loaded_dates.add(yesterday)
+                    logger.info(f"Yesterday photos loaded via refresh, loaded_dates now: {self.loaded_dates}")
+            
+            # Count images after potential yesterday load
+            new_total_images = sum(len(images) for images in self.images_by_date.values())
+            logger.info(f"Images after refresh: {new_total_images}")
+            
+            # Update status
+            if new_total_images == old_total_images and old_total_images > 0 and today_count >= 16:
+                # No new images found, show "up to date" message temporarily
+                self.status_label.setText("Gallery is up to date")
+                QTimer.singleShot(2000, lambda: self.status_label.setText(f"{new_total_images} images from {len(self.images_by_date)} days"))
+            else:
+                self.status_label.setText(f"{new_total_images} images from {len(self.images_by_date)} days")
+            
+            # Hide progress bar
+            self.progress_bar.setVisible(False)
+            
+        except Exception as e:
+            logger.error(f"Error refreshing gallery: {e}")
+            self.set_status_message("Error refreshing gallery", "#ff6464")
+    
+    def load_today_photos(self):
+        """Load only today's photos on startup"""
+        try:
+            # Show loading status immediately
+            self.set_status_message("Loading gallery...", "#ffcc00")
+            QApplication.processEvents()  # Force UI update
+            
+            # Show progress bar
+            self.progress_bar.setVisible(True)
+            self.progress_bar.setValue(0)
+            self.progress_bar.setFormat("Scanning for photos...")
+            
+            storage_dir = Path(self.config.get('storage', {}).get('save_dir', 
+                                               str(Path.home() / 'BirdPhotos')))
+            
+            logger.info(f"Gallery looking for photos in: {storage_dir}")
+            
+            if not storage_dir.exists():
+                logger.warning(f"Photos directory does not exist: {storage_dir}")
+                self.status_label.setText("No photos directory found")
+                # Hide progress bar
+                self.progress_bar.setVisible(False)
+                return
+            
+            # Load only today's folder
+            today_folder = storage_dir / self.today_date
+            logger.info(f"Looking for today's folder: {today_folder}")
+            
+            if today_folder.exists() and today_folder.is_dir():
+                logger.info(f"Loading photos from: {today_folder}")
+                self.set_status_message("Loading today's photos...", "#ffcc00")
+                QApplication.processEvents()  # Force UI update
+                
+                self.load_date_folder(self.today_date, today_folder)
+                self.loaded_dates.add(self.today_date)
+                
+                # Check if we should load yesterday too (if today has < 16 photos)
+                today_count = len(self.images_by_date.get(self.today_date, []))
+                yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+                
+                logger.info(f"Auto-load check: today_count={today_count}, yesterday='{yesterday}', loaded_dates={self.loaded_dates}")
+                
+                if today_count < 16 and yesterday not in self.loaded_dates:
+                    yesterday_folder = storage_dir / yesterday
+                    logger.info(f"Checking yesterday folder: {yesterday_folder}, exists={yesterday_folder.exists()}")
+                    if yesterday_folder.exists() and yesterday_folder.is_dir():
+                        logger.info(f"Today only has {today_count} photos, loading yesterday's photos too...")
+                        self.set_status_message(f"Loading more photos (today has only {today_count})...", "#ffcc00")
+                        self.progress_bar.setFormat("Loading yesterday's photos...")
+                        QApplication.processEvents()  # Force UI update
+                        
+                        # Load yesterday's photos (only 24 to start)
+                        has_more = self.load_date_folder(yesterday, yesterday_folder, limit=24, offset=0)
+                        self.loaded_dates.add(yesterday)
+                        logger.info(f"Yesterday photos loaded (24 images), has_more={has_more}")
+                else:
+                    logger.info(f"Not loading yesterday: count check={today_count < 16}, not in loaded={yesterday not in self.loaded_dates}")
+                
+                # Update status with final count
+                total_images = sum(len(images) for images in self.images_by_date.values())
+                self.status_label.setText(f"Loaded {total_images} images from {len(self.images_by_date)} days")
+                # Hide progress bar
+                self.progress_bar.setVisible(False)
+            else:
+                logger.info(f"No photos folder for today: {today_folder}")
+                
+                # Try to load yesterday's photos instead
+                yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+                yesterday_folder = storage_dir / yesterday
+                
+                if yesterday_folder.exists() and yesterday_folder.is_dir():
+                    logger.info(f"Loading yesterday's photos from: {yesterday_folder}")
+                    self.set_status_message("No photos today - loading yesterday's photos...", "#ffcc00")
+                    self.progress_bar.setFormat("Loading yesterday's photos...")
+                    
+                    # Create and start loader thread for yesterday
+                    self.loader_thread = GalleryLoaderThread(yesterday_folder)
+                    self.loader_thread.image_loaded.connect(self.on_image_loaded)
+                    self.loader_thread.progress.connect(self.on_loader_progress)
+                    self.loader_thread.finished_loading.connect(self.on_loading_finished)
+                    self.loader_thread.start()
+                else:
+                    self.status_label.setText("No photos for today or yesterday")
+                    # Hide progress bar
+                    self.progress_bar.setVisible(False)
+                
+        except Exception as e:
+            logger.error(f"Error loading today's photos: {e}")
+            self.set_status_message("Error loading photos", "#ff6464")
+    
+    def load_date_folder(self, date_str, folder_path, limit=24, offset=0):
+        """Load photos from a specific date folder with pagination
+        
+        Args:
+            date_str: Date string (YYYY-MM-DD)
+            folder_path: Path to the folder
+            limit: Maximum number of images to load (default 24)
+            offset: Starting offset for loading (default 0)
+        """
+        try:
+            logger.info(f"Loading date folder: {date_str} from path: {folder_path} (limit={limit}, offset={offset})")
+            
+            # Create date section if it doesn't exist
+            if date_str not in self.date_widgets:
+                logger.info(f"Creating new date section for: {date_str}")
+                self.create_date_section(date_str)
+                self.images_by_date[date_str] = []
+            
+            # Track loaded image paths per date
+            if not hasattr(self, 'loaded_image_paths'):
+                self.loaded_image_paths = {}
+            if date_str not in self.loaded_image_paths:
+                self.loaded_image_paths[date_str] = set()
+            
+            # Get existing images for this date
+            existing_paths = self.loaded_image_paths[date_str]
+            logger.info(f"Already loaded images for {date_str}: {len(existing_paths)}")
+            
+            # Search for image files with multiple extensions
+            image_extensions = ['*.jpg', '*.jpeg', '*.png', '*.gif', '*.bmp']
+            all_images = []
+            
+            for ext in image_extensions:
+                found_images = list(folder_path.glob(f'**/{ext}'))
+                all_images.extend(found_images)
+                logger.info(f"Found {len(found_images)} {ext} files in {folder_path}")
+            
+            logger.info(f"Total image files found in {folder_path}: {len(all_images)}")
+            
+            # Sort images by modification time (newest first)
+            sorted_images = sorted(all_images, key=lambda p: p.stat().st_mtime, reverse=True)
+            
+            # Get the batch to load based on offset and limit
+            batch_images = sorted_images[offset:offset + limit]
+            logger.info(f"Loading batch: {len(batch_images)} images from offset {offset}")
+            
+            # Load new images with memory management
+            new_images = 0
+            
+            for image_path in batch_images:
+                    
+                logger.debug(f"Processing image: {image_path}")
+                if str(image_path) not in existing_paths:
+                    try:
+                        # Load and add image with explicit memory management
+                        pixmap = QPixmap(str(image_path))
+                        if not pixmap.isNull():
+                            # Create smaller thumbnail to save memory
+                            scaled_pixmap = pixmap.scaled(150, 150, Qt.AspectRatioMode.KeepAspectRatio, 
+                                                        Qt.TransformationMode.FastTransformation)
+                            
+                            # Explicitly delete the original large pixmap
+                            del pixmap
+                            
+                            self.add_image_to_gallery(date_str, image_path, scaled_pixmap)
+                            self.loaded_image_paths[date_str].add(str(image_path))
+                            new_images += 1
+                            logger.debug(f"Added image to gallery: {image_path}")
+                            
+                            # Periodic garbage collection every 12 images
+                            if new_images % 12 == 0:
+                                import gc
+                                gc.collect()
+                                QApplication.processEvents()  # Keep UI responsive
+                        else:
+                            logger.warning(f"Failed to load pixmap for: {image_path}")
+                    except Exception as e:
+                        logger.error(f"Error loading image {image_path}: {e}")
+                else:
+                    logger.debug(f"Image already loaded: {image_path}")
+            
+            logger.info(f"Added {new_images} new images for date {date_str}")
+            
+            # Update status
+            total_images = sum(len(images) for images in self.images_by_date.values())
+            self.status_label.setText(f"{total_images} images from {len(self.images_by_date)} days")
+            logger.info(f"Gallery now has {total_images} total images from {len(self.images_by_date)} days")
+            
+            # Store info about remaining images for this date
+            if not hasattr(self, 'date_load_info'):
+                self.date_load_info = {}
+            self.date_load_info[date_str] = {
+                'total': len(sorted_images),
+                'loaded': len(self.loaded_image_paths[date_str]),
+                'has_more': (offset + limit) < len(sorted_images)
+            }
+            
+            # Return whether there are more images to load
+            has_more = (offset + limit) < len(sorted_images)
+            logger.info(f"Date {date_str}: loaded {len(self.loaded_image_paths[date_str])}/{len(sorted_images)} images, has_more={has_more}")
+            return has_more
+            
+        except Exception as e:
+            logger.error(f"Error loading date folder {date_str}: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return False
+    
+    def add_image_to_gallery(self, date_str, image_path, scaled_pixmap):
+        """Add a single image to the gallery"""
+        logger.debug(f"Adding image to gallery UI: {image_path} for date {date_str}")
+        
+        # Get the date section info
+        if date_str not in self.date_widgets:
+            logger.error(f"Date section {date_str} not found in date_widgets")
+            return
+            
+        date_info = self.date_widgets[date_str]
+        if not isinstance(date_info, dict) or 'widget' not in date_info:
+            logger.error(f"Invalid date_info structure for {date_str}: {type(date_info)} - {date_info}")
+            return
+            
+        grid_widget = date_info['widget']
+        if not hasattr(grid_widget, 'layout'):
+            logger.error(f"Grid widget for {date_str} has no layout method: {type(grid_widget)}")
+            return
+            
+        grid_layout = grid_widget.layout()
+        
+        # Get current number of images for this date
+        images_in_date = len(self.images_by_date[date_str])
+        
+        # Calculate position in the grid (4 columns)
+        col = images_in_date % 4
+        row = images_in_date // 4
+        
+        logger.debug(f"Adding image to date {date_str} grid at row {row}, col {col}")
+        
+        # Create gallery item
+        item_widget = self.create_gallery_item(str(image_path), scaled_pixmap)
+        grid_layout.addWidget(item_widget, row, col)
+        
+        # Update tracking
+        self.images_by_date[date_str].append(str(image_path))
+        self.gallery_items.append((str(image_path), item_widget))
+        
+        logger.debug(f"Gallery now has {len(self.gallery_items)} total items")
+    
+    def check_for_new_images(self):
+        """Check for new images in today's folder only"""
+        try:
+            storage_dir = Path(self.config.get('storage', {}).get('save_dir', 
+                                               str(Path.home() / 'BirdPhotos')))
+            
+            if not storage_dir.exists():
+                return
+            
+            # Update today's date in case we crossed midnight
+            self.today_date = datetime.now().strftime('%Y-%m-%d')
+            
+            # Check today's folder
+            today_folder = storage_dir / self.today_date
+            if today_folder.exists() and today_folder.is_dir():
+                # Count current images on disk
+                images_on_disk = len(list(today_folder.rglob('*.jpg')))
+                current_loaded = len(self.images_by_date.get(self.today_date, []))
+                
+                # Load new images if count differs
+                if images_on_disk > current_loaded:
+                    logger.info(f"Found {images_on_disk - current_loaded} new images for today")
+                    self.load_date_folder(self.today_date, today_folder)
+                    
+        except Exception as e:
+            logger.error(f"Error checking for new images: {e}")
+    
+    def add_new_image_immediately(self, image_path):
+        """Add a new image immediately when captured"""
         try:
             path = Path(image_path)
             if not path.exists():
                 return
-                
-            # Get image date
-            mtime = path.stat().st_mtime
-            date_str = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d')
             
-            # Load and scale the image
+            # Get the date from the image path
+            date_str = path.parent.name
+            # Check if this looks like a date folder (YYYY-MM-DD format)
+            if not date_str or len(date_str) != 10 or date_str.count('-') != 2:
+                date_str = self.today_date
+            
+            logger.debug(f"Adding new image {path.name} to date section: {date_str}")
+            
+            # Load image
             pixmap = QPixmap(str(path))
-            if pixmap.isNull():
-                return
+            if not pixmap.isNull():
+                scaled_pixmap = pixmap.scaled(180, 180, Qt.AspectRatioMode.KeepAspectRatio, 
+                                            Qt.TransformationMode.SmoothTransformation)
                 
-            scaled_pixmap = pixmap.scaled(180, 180, Qt.AspectRatioMode.KeepAspectRatio, 
-                                        Qt.TransformationMode.SmoothTransformation)
-            
-            # Create gallery item
-            widget_data = self.create_gallery_item(str(path), scaled_pixmap)
-            
-            # Add to the appropriate date section
-            if date_str not in self.images_by_date:
-                # Create new date section at the top
-                self.create_date_section(date_str, prepend=True)
-                self.images_by_date[date_str] = []
-            
-            # Insert at the beginning of today's images
-            self.images_by_date[date_str].insert(0, widget_data)
-            
-            # Add to the layout
-            if date_str in self.date_widgets:
-                grid_widget = self.date_widgets[date_str]
-                grid_layout = grid_widget.layout()
+                # Create date section if needed
+                if date_str not in self.date_widgets:
+                    self.create_date_section(date_str)
+                    self.images_by_date[date_str] = []
+                    self.loaded_dates.add(date_str)
                 
-                # Shift existing items and insert new one at position 0
-                self.reorganize_date_grid(grid_layout, widget_data['container'])
-            
-            # Update status
-            total_images = sum(len(images) for images in self.images_by_date.values())
-            self.status_label.setText(f"Loaded {total_images} images from {len(self.images_by_date)} days")
-            
-            logger.info(f"Added new image to gallery: {path.name}")
-            
+                # Add to gallery
+                self.add_image_to_gallery(date_str, path, scaled_pixmap)
+                logger.info(f"Added new image to gallery: {path.name}")
+                
         except Exception as e:
-            logger.error(f"Error adding new image to gallery: {e}")
+            logger.error(f"Error adding new image immediately: {e}")
     
-    def reorganize_date_grid(self, grid_layout, new_widget):
-        """Reorganize grid to insert new widget at the beginning"""
-        # Store existing widgets
-        widgets = []
-        for i in range(grid_layout.count()):
-            item = grid_layout.itemAt(i)
-            if item and item.widget():
-                widgets.append(item.widget())
-        
-        # Clear layout
-        while grid_layout.count():
-            item = grid_layout.takeAt(0)
+    def on_scroll_changed(self, value):
+        """Handle scroll changes for lazy loading"""
+        try:
+            # Check if we're near the bottom
+            scrollbar = self.scroll_area.verticalScrollBar()
+            if scrollbar.maximum() > 0:
+                scroll_percentage = (value / scrollbar.maximum()) * 100
+                
+                # If scrolled past 80%, try to load more dates
+                if scroll_percentage > 80:
+                    self.load_previous_dates()
+                    
+        except Exception as e:
+            logger.error(f"Error in scroll handler: {e}")
+    
+    def load_previous_dates(self):
+        """Load more photos (24 at a time) when scrolling down"""
+        try:
+            # Prevent concurrent loading
+            if hasattr(self, 'is_loading_more') and self.is_loading_more:
+                return
+            self.is_loading_more = True
             
-        # Add new widget first
-        grid_layout.addWidget(new_widget, 0, 0)
-        
-        # Re-add existing widgets
-        col = 1
-        row = 0
-        for widget in widgets:
-            if col >= 4:  # 4 columns
-                col = 0
-                row += 1
-            grid_layout.addWidget(widget, row, col)
-            col += 1
+            # Show loading status
+            old_status = self.status_label.text()
+            self.set_status_message("Loading more photos...", "#ffcc00")
+            QApplication.processEvents()  # Force UI update
+            
+            storage_dir = Path(self.config.get('storage', {}).get('save_dir', 
+                                               str(Path.home() / 'BirdPhotos')))
+            
+            if not storage_dir.exists():
+                self.set_status_message("No storage directory found", "#ff6464")
+                self.is_loading_more = False
+                return
+            
+            # First check if current dates have more images to load
+            if hasattr(self, 'date_load_info'):
+                for date_str in sorted(self.date_load_info.keys(), reverse=True):
+                    info = self.date_load_info[date_str]
+                    if info.get('has_more', False):
+                        # Load next batch from this date
+                        date_folder = storage_dir / date_str
+                        offset = info['loaded']
+                        logger.info(f"Loading more from {date_str}, offset={offset}")
+                        
+                        has_more = self.load_date_folder(date_str, date_folder, limit=24, offset=offset)
+                        self.is_loading_more = False
+                        # Update status to show completion
+                        total_images = sum(len(images) for images in self.images_by_date.values())
+                        self.set_status_message(f"Loaded {total_images} images from {len(self.images_by_date)} days")
+                        
+                        # After loading, check scroll position again
+                        QTimer.singleShot(100, self.check_scroll_position)
+                        return
+            
+            # If no existing dates have more, load from a new date
+            all_dates = []
+            for folder in storage_dir.iterdir():
+                if folder.is_dir() and folder.name.count('-') == 2:  # Basic date format check
+                    try:
+                        # Validate it's a proper date
+                        datetime.strptime(folder.name, '%Y-%m-%d')
+                        all_dates.append(folder.name)
+                    except ValueError:
+                        continue
+            
+            all_dates.sort(reverse=True)
+            
+            # Find the next date to load
+            for date_str in all_dates:
+                if date_str not in self.loaded_dates:
+                    # Load first batch from this new date
+                    date_folder = storage_dir / date_str
+                    logger.info(f"Loading new date: {date_str}")
+                    self.set_status_message(f"Loading photos from {date_str}...", "#ffcc00")
+                    QApplication.processEvents()  # Force UI update
+                    
+                    # Load first batch (24 images) from new date
+                    has_more = self.load_date_folder(date_str, date_folder, limit=24, offset=0)
+                    self.loaded_dates.add(date_str)
+                    self.is_loading_more = False
+                    # Update status to show completion
+                    total_images = sum(len(images) for images in self.images_by_date.values())
+                    self.set_status_message(f"Loaded {total_images} images from {len(self.images_by_date)} days")
+                    
+                    # After loading, check scroll position again
+                    QTimer.singleShot(100, self.check_scroll_position)
+                    return
+            
+            # No more dates to load
+            total_images = sum(len(images) for images in self.images_by_date.values())
+            self.set_status_message(f"Loaded {total_images} images from {len(self.images_by_date)} days")
+            self.is_loading_more = False
+                    
+        except Exception as e:
+            logger.error(f"Error loading previous dates: {e}")
+            self.set_status_message("Error loading photos", "#ff6464")
+            self.is_loading_more = False
+    
+    def check_scroll_position(self):
+        """Check if we need to load more images based on scroll position"""
+        try:
+            scrollbar = self.scroll_area.verticalScrollBar()
+            if scrollbar.maximum() > 0:
+                scroll_percentage = (scrollbar.value() / scrollbar.maximum()) * 100
+                if scroll_percentage > 80:
+                    # Still near bottom, load more
+                    self.load_previous_dates()
+        except Exception as e:
+            logger.debug(f"Error checking scroll position: {e}")
     
     def create_date_section(self, date_str, prepend=False):
         """Create a date section in the gallery"""
-        # Date header
-        date_label = QLabel(date_str)
+        # Date header - format the date nicely
+        try:
+            date_obj = datetime.strptime(date_str, '%Y-%m-%d')
+            formatted_date = date_obj.strftime('%A, %B %d, %Y')  # e.g., "Sunday, August 04, 2024"
+        except:
+            formatted_date = date_str
+            
+        date_label = QLabel(formatted_date)
         date_label.setStyleSheet("""
             QLabel {
-                font-size: 16px;
+                font-size: 18px;
                 font-weight: bold;
-                color: #333;
-                padding: 10px 0px 5px 0px;
+                color: #ffffff;
+                background-color: #404040;
+                padding: 10px 15px;
+                border-radius: 5px;
+                margin: 10px 0px;
             }
         """)
         
@@ -1357,7 +2256,13 @@ class GalleryTab(QWidget):
             self.gallery_layout.addWidget(date_label, row, 0, 1, 4)
             self.gallery_layout.addWidget(grid_widget, row + 1, 0, 1, 4)
         
-        self.date_widgets[date_str] = grid_widget
+        # Store both widget and row information for compatibility
+        row = self.gallery_layout.rowCount() - 1  # Row where the grid was added
+        self.date_widgets[date_str] = {
+            'widget': grid_widget,
+            'label': date_label,
+            'row': row
+        }
     
     def load_photos(self):
         """Load all photos from the storage directory - non-blocking"""
@@ -1374,6 +2279,7 @@ class GalleryTab(QWidget):
         self.date_widgets.clear()
         self.gallery_items.clear()
         self.selected_items.clear()
+        self.current_focus_index = -1  # Reset focus
         self.update_selection_label()
         
         # Get storage directory
@@ -1388,7 +2294,7 @@ class GalleryTab(QWidget):
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
         self.refresh_btn.setEnabled(False)
-        self.status_label.setText("Loading photos...")
+        self.set_status_message("Loading photos...", "#ffcc00")
         
         # Start background loader
         self.loader_thread = GalleryLoader(storage_dir)
@@ -1398,11 +2304,41 @@ class GalleryTab(QWidget):
         self.loader_thread.start()
     
     def clear_gallery(self):
-        """Clear all gallery widgets"""
+        """Clear all gallery widgets with aggressive memory cleanup"""
+        logger.info("Clearing gallery with memory cleanup...")
+        
+        # Clear layout and explicitly delete widgets
         while self.gallery_layout.count():
             item = self.gallery_layout.takeAt(0)
             if item.widget():
-                item.widget().deleteLater()
+                widget = item.widget()
+                
+                # Find and delete any pixmaps in child widgets
+                for child in widget.findChildren(QLabel):
+                    if child.pixmap():
+                        child.clear()
+                
+                widget.deleteLater()
+        
+        # Clear tracking collections
+        if hasattr(self, 'gallery_items'):
+            self.gallery_items.clear()
+        if hasattr(self, 'selected_items'):
+            self.selected_items.clear()
+        if hasattr(self, 'images_by_date'):
+            self.images_by_date.clear()
+        if hasattr(self, 'date_widgets'):
+            self.date_widgets.clear()
+        if hasattr(self, 'loaded_dates'):
+            self.loaded_dates.clear()
+        if hasattr(self, 'current_focus_index'):
+            self.current_focus_index = -1
+        
+        # Force garbage collection
+        import gc
+        gc.collect()
+        
+        logger.info("Gallery cleared and memory cleaned up")
     
     @pyqtSlot(int, int, str)
     def on_load_progress(self, current, total, message):
@@ -1414,7 +2350,6 @@ class GalleryTab(QWidget):
     @pyqtSlot(object, str, float)
     def on_image_loaded(self, widget_data, date_str, mtime):
         """Add loaded image to gallery"""
-        from datetime import datetime
         
         # Group by date
         if date_str not in self.images_by_date:
@@ -1447,8 +2382,36 @@ class GalleryTab(QWidget):
         self.progress_bar.setVisible(False)
         self.refresh_btn.setEnabled(True)
         
+        # Check if we loaded today's photos and if count is less than 16
+        today_count = len(self.images_by_date.get(self.today_date, []))
         total_images = sum(len(images) for images in self.images_by_date.values())
-        self.status_label.setText(f"Loaded {total_images} images from {len(self.images_by_date)} days")
+        
+        # If today has less than 16 photos and we haven't loaded yesterday yet, load it
+        yesterday = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+        if today_count > 0 and today_count < 16 and yesterday not in self.images_by_date:
+            storage_dir = Path(self.config.get('storage', {}).get('save_dir', 
+                                               str(Path.home() / 'BirdPhotos')))
+            yesterday_folder = storage_dir / yesterday
+            
+            if yesterday_folder.exists() and yesterday_folder.is_dir():
+                logger.info(f"Today only has {today_count} photos, loading yesterday's photos too...")
+                self.set_status_message(f"Loading more photos (today has only {today_count})...", "#ffcc00")
+                
+                # Show progress bar again
+                self.progress_bar.setVisible(True)
+                self.progress_bar.setFormat("Loading yesterday's photos...")
+                
+                # Load yesterday's photos
+                self.loader_thread = GalleryLoaderThread(yesterday_folder)
+                self.loader_thread.image_loaded.connect(self.on_image_loaded)
+                self.loader_thread.progress.connect(self.on_loader_progress)
+                self.loader_thread.finished_loading.connect(self.on_loading_finished)
+                self.loader_thread.start()
+                return
+        
+        # Normal completion - reset to normal color
+        self.set_status_message(f"Loaded {total_images} images from {len(self.images_by_date)} days")
+    
     
     def create_gallery_item(self, image_path, scaled_pixmap):
         """Create a gallery item widget"""
@@ -1478,7 +2441,7 @@ class GalleryTab(QWidget):
         thumb_label.setPixmap(scaled_pixmap)
         thumb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         thumb_label.setStyleSheet("QLabel { background-color: #000; }")
-        thumb_label.mousePressEvent = lambda e: self.show_full_image(image_path) if e.button() == Qt.MouseButton.LeftButton else None
+        thumb_label.mousePressEvent = lambda e: self.on_image_clicked(image_path) if e.button() == Qt.MouseButton.LeftButton else None
         thumb_label.setCursor(Qt.CursorShape.PointingHandCursor)
         layout.addWidget(thumb_label)
         
@@ -1489,7 +2452,74 @@ class GalleryTab(QWidget):
         name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(name_label)
         
+        # Time ago label
+        time_ago = self.get_time_ago_text(image_path)
+        time_label = QLabel(time_ago)
+        time_label.setStyleSheet("color: #999; font-size: 9px; font-style: italic;")
+        time_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(time_label)
+        
         return container
+    
+    def get_time_ago_text(self, image_path):
+        """Extract timestamp from filename and return human-readable time ago text"""
+        try:
+            import re
+            
+            # Extract timestamp from filename (motion_1754413128.jpeg -> 1754413128)
+            filename = Path(image_path).name
+            match = re.search(r'motion_(\d+)\.jpeg', filename)
+            
+            if match:
+                timestamp = int(match.group(1))
+                # Convert timestamp to datetime
+                image_time = datetime.fromtimestamp(timestamp)
+                now = datetime.now()
+                
+                # Calculate time difference
+                diff = now - image_time
+                
+                # Format as human-readable text
+                if diff.days > 0:
+                    if diff.days == 1:
+                        return "1 day ago"
+                    else:
+                        return f"{diff.days} days ago"
+                elif diff.seconds > 3600:  # More than 1 hour
+                    hours = diff.seconds // 3600
+                    if hours == 1:
+                        return "1 hour ago"
+                    else:
+                        return f"{hours} hours ago"
+                elif diff.seconds > 60:  # More than 1 minute
+                    minutes = diff.seconds // 60
+                    if minutes == 1:
+                        return "1 minute ago"
+                    else:
+                        return f"{minutes} minutes ago"
+                else:
+                    return "Just now"
+            else:
+                # Fallback: use file modification time
+                stat = Path(image_path).stat()
+                image_time = datetime.fromtimestamp(stat.st_mtime)
+                now = datetime.now()
+                diff = now - image_time
+                
+                if diff.days > 0:
+                    return f"{diff.days} days ago"
+                elif diff.seconds > 3600:
+                    hours = diff.seconds // 3600
+                    return f"{hours} hours ago"
+                elif diff.seconds > 60:
+                    minutes = diff.seconds // 60
+                    return f"{minutes} minutes ago"
+                else:
+                    return "Just now"
+                    
+        except Exception as e:
+            logger.debug(f"Error getting time ago for {image_path}: {e}")
+            return ""
     
     def on_item_selected(self, path, state):
         """Handle item selection"""
@@ -1519,41 +2549,24 @@ class GalleryTab(QWidget):
             checkbox = widget.findChild(QCheckBox)
             if checkbox:
                 checkbox.setChecked(False)
+    
+    def get_all_image_paths(self):
+        """Get all image paths in the current gallery view"""
+        all_paths = []
+        # Collect paths in date order
+        for date_str in sorted(self.images_by_date.keys(), reverse=True):
+            all_paths.extend(self.images_by_date[date_str])
+        return all_paths
                 
     def show_full_image(self, image_path):
-        """Show full-size image in a dialog"""
+        """Show full-size image in a dialog with keyboard navigation"""
         # Convert to Path object if it's a string
         if isinstance(image_path, str):
             image_path = Path(image_path)
-            
-        dialog = QDialog(self)
-        dialog.setWindowTitle(image_path.name)
-        dialog.setModal(True)
         
-        layout = QVBoxLayout(dialog)
-        
-        # Image label
-        label = QLabel()
-        pixmap = QPixmap(str(image_path))
-        
-        # Scale to fit screen if needed
-        screen = QApplication.primaryScreen().geometry()
-        max_width = int(screen.width() * 0.9)
-        max_height = int(screen.height() * 0.9)
-        
-        if pixmap.width() > max_width or pixmap.height() > max_height:
-            pixmap = pixmap.scaled(max_width, max_height, 
-                                 Qt.AspectRatioMode.KeepAspectRatio,
-                                 Qt.TransformationMode.SmoothTransformation)
-        
-        label.setPixmap(pixmap)
-        layout.addWidget(label)
-        
-        # Close button
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(dialog.close)
-        layout.addWidget(close_btn, alignment=Qt.AlignmentFlag.AlignCenter)
-        
+        # Create custom dialog for keyboard handling
+        self.current_full_image = str(image_path)
+        dialog = ImageViewerDialog(self, image_path, self.get_all_image_paths())
         dialog.exec()
         
     def delete_selected(self):
@@ -1570,15 +2583,32 @@ class GalleryTab(QWidget):
         )
         
         if reply == QMessageBox.StandardButton.Yes:
-            for image_path in self.selected_items:
+            deleted_count = 0
+            for image_path in self.selected_items.copy():  # Copy to avoid modification during iteration
                 try:
-                    image_path.unlink()
-                    logger.info(f"Deleted {image_path}")
+                    # Ensure image_path is a Path object
+                    if isinstance(image_path, str):
+                        image_path = Path(image_path)
+                    
+                    if image_path.exists():
+                        image_path.unlink()
+                        deleted_count += 1
+                        logger.info(f"Deleted {image_path}")
+                    else:
+                        logger.warning(f"File not found: {image_path}")
+                        
                 except Exception as e:
                     logger.error(f"Failed to delete {image_path}: {e}")
-                    
+                    QMessageBox.warning(self, "Delete Error", f"Failed to delete {image_path.name}: {str(e)}")
+            
+            # Clear selection
+            self.selected_items.clear()
+            self.update_selection_label()
+            
             # Reload gallery
-            self.load_photos()
+            if deleted_count > 0:
+                self.load_photos()
+                QMessageBox.information(self, "Delete Complete", f"Successfully deleted {deleted_count} image(s).")
             
     def email_selected(self):
         """Email selected images"""
@@ -1609,6 +2639,9 @@ class GalleryTab(QWidget):
             if success:
                 QMessageBox.information(self, "Email Sent", 
                                       f"Successfully sent {len(self.selected_items)} images")
+                
+                # Clear selection after successful email
+                self.clear_selection()
             else:
                 QMessageBox.warning(self, "Email Failed", 
                                   "Failed to send email")
@@ -2274,7 +3307,25 @@ class ConfigTab(QWidget):
         group_layout.addWidget(QLabel("OpenAI API Key:"), 1, 0)
         self.openai_key = QLineEdit()
         self.openai_key.setEchoMode(QLineEdit.EchoMode.Password)
-        group_layout.addWidget(self.openai_key, 1, 1, 1, 2)
+        group_layout.addWidget(self.openai_key, 1, 1)
+        
+        # API key link
+        api_link_btn = QPushButton("Get API Key")
+        api_link_btn.setMaximumWidth(100)
+        api_link_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                padding: 5px;
+                border-radius: 3px;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+        """)
+        api_link_btn.clicked.connect(self.open_openai_api_page)
+        group_layout.addWidget(api_link_btn, 1, 2)
         
         # Rate limit
         group_layout.addWidget(QLabel("Max Images/Hour:"), 2, 0)
@@ -2426,6 +3477,21 @@ class ConfigTab(QWidget):
         if dir_path:
             self.storage_dir.setText(dir_path)
     
+    def open_openai_api_page(self):
+        """Open OpenAI API key page in browser"""
+        try:
+            url = QUrl("https://platform.openai.com/api-keys")
+            QDesktopServices.openUrl(url)
+            logger.info("Opened OpenAI API keys page in browser")
+        except Exception as e:
+            logger.error(f"Failed to open OpenAI API page: {e}")
+            QMessageBox.information(
+                self, 
+                "OpenAI API Keys", 
+                "Please visit: https://platform.openai.com/api-keys\n\n"
+                "Create an account and generate an API key to enable bird identification."
+            )
+    
     def setup_google_drive(self):
         """Launch Google Drive OAuth setup"""
         msg = QMessageBox()
@@ -2570,21 +3636,35 @@ class ConfigTab(QWidget):
         """Clear all identified bird species"""
         reply = QMessageBox.question(
             self, "Clear Species Database", 
-            "Are you sure you want to delete all identified bird species?\n\nThis will remove all AI identification history.",
+            "Are you sure you want to delete all identified bird species?\n\nThis will remove all AI identification history and IdentifiedSpecies photos.",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         
         if reply == QMessageBox.StandardButton.Yes:
             try:
+                # Clear the species database
                 species_db_path = Path(__file__).parent / "species_database.json"
                 if species_db_path.exists():
                     # Reset to empty database
-                    empty_db = {"species": {}, "sightings": []}
+                    empty_db = {"species": {}, "sightings": [], "daily_stats": {}}
                     with open(species_db_path, 'w') as f:
                         json.dump(empty_db, f, indent=2)
-                    QMessageBox.information(self, "Success", "Species database cleared!")
-                else:
-                    QMessageBox.information(self, "Info", "Species database doesn't exist yet.")
+                
+                # Clear IdentifiedSpecies folder
+                import shutil
+                identified_species_path = Path.home() / "BirdPhotos" / "IdentifiedSpecies"
+                if identified_species_path.exists():
+                    shutil.rmtree(identified_species_path)
+                    identified_species_path.mkdir(parents=True, exist_ok=True)  # Recreate empty folder
+                
+                # Refresh species tab if it exists
+                if hasattr(self, 'species_tab'):
+                    self.species_tab.load_species()
+                    # Force heatmap to clear by updating with empty bird identifier
+                    if hasattr(self.species_tab, 'heatmap_widget'):
+                        self.species_tab.heatmap_widget.update_data(None)
+                
+                QMessageBox.information(self, "Success", "Species database and IdentifiedSpecies folder cleared!")
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to clear species database: {str(e)}")
     
@@ -2721,15 +3801,15 @@ class ConfigTab(QWidget):
                 result = subprocess.run(['sudo', 'systemctl', 'start', 'bird-detection-watchdog.service'], 
                                       capture_output=True, text=True)
                 if result.returncode == 0:
-                    # Show notification and close app
-                    QMessageBox.information(
-                        self, "Watchdog Started", 
-                        "Watchdog service started successfully!\n\n"
-                        "This app will now close and automatically reopen within 60 seconds.\n\n"
-                        "Please wait..."
-                    )
-                    # Force shutdown for watchdog restart
-                    self.force_shutdown_for_watchdog()
+                    # Show brief notification
+                    msg = QMessageBox(self)
+                    msg.setIcon(QMessageBox.Icon.Information)
+                    msg.setWindowTitle("Watchdog Started")
+                    msg.setText("Watchdog service started successfully!\n\nThis app will now close and reopen automatically.")
+                    msg.show()
+                    
+                    # Use QTimer to delay shutdown so message shows briefly
+                    QTimer.singleShot(2000, self.force_shutdown_for_watchdog)
                 else:
                     QMessageBox.critical(self, "Error", f"Failed to start service:\n{result.stderr}")
             except Exception as e:
@@ -2877,9 +3957,28 @@ class ConfigTab(QWidget):
             }
             
             
+            # Update the config_manager's config first
+            self.config_manager.config = self.config
+            
             # Save to file
             self.config_manager.save_config()
-            QMessageBox.information(self, "Success", "Configuration saved!")
+            
+            # Update the EmailHandler with new configuration immediately
+            main_window = self.window()
+            if hasattr(main_window, 'email_handler') and main_window.email_handler:
+                try:
+                    # Reinitialize EmailHandler with updated config
+                    main_window.email_handler = EmailHandler(self.config)
+                    logger.info("EmailHandler updated with new configuration")
+                    
+                    # Update gallery tab's email handler reference
+                    if hasattr(main_window, 'gallery_tab') and main_window.gallery_tab:
+                        main_window.gallery_tab.email_handler = main_window.email_handler
+                        
+                except Exception as e:
+                    logger.error(f"Failed to update EmailHandler: {e}")
+                    
+            QMessageBox.information(self, "Success", "Configuration saved and applied!")
             
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to save config: {str(e)}")
@@ -2930,9 +4029,17 @@ class LogsTab(QWidget):
         # Log controls
         controls_layout = QHBoxLayout()
         
-        self.clear_btn = QPushButton("Clear Logs")
+        self.clear_btn = QPushButton("Clear Display")
         self.clear_btn.clicked.connect(self.clear_logs)
         controls_layout.addWidget(self.clear_btn)
+        
+        self.refresh_btn = QPushButton("Refresh Logs")
+        self.refresh_btn.clicked.connect(self.update_logs)
+        controls_layout.addWidget(self.refresh_btn)
+        
+        self.journal_btn = QPushButton("View System Logs")
+        self.journal_btn.clicked.connect(self.view_system_logs)
+        controls_layout.addWidget(self.journal_btn)
         
         self.auto_scroll_cb = QCheckBox("Auto Scroll")
         self.auto_scroll_cb.setChecked(True)
@@ -2955,27 +4062,92 @@ class LogsTab(QWidget):
     def update_logs(self):
         """Update log display"""
         try:
-            # Get new log lines
-            lines = log_buffer.get_lines()
+            # Get new log lines from buffer
+            buffer_lines = log_buffer.get_lines()
+            
+            # Also try to read from log file for more comprehensive logs
+            log_file_path = Path(__file__).parent / 'logs' / 'bird_detection.log'
+            file_lines = []
+            
+            if log_file_path.exists():
+                try:
+                    with open(log_file_path, 'r') as f:
+                        file_lines = f.readlines()[-200:]  # Last 200 lines
+                        file_lines = [line.strip() for line in file_lines if line.strip()]
+                except Exception as e:
+                    logger.debug(f"Could not read log file: {e}")
+            
+            # Combine and deduplicate
+            all_lines = file_lines if file_lines else buffer_lines
             
             # Update display
-            if lines:
+            if all_lines:
                 self.log_display.clear()
-                self.log_display.append('\n'.join(lines))
+                if isinstance(all_lines, list):
+                    self.log_display.append('\n'.join(all_lines))
+                else:
+                    self.log_display.append(all_lines)
                 
                 # Auto scroll to bottom
                 if self.auto_scroll_cb.isChecked():
                     cursor = self.log_display.textCursor()
                     cursor.movePosition(cursor.MoveOperation.End)
                     self.log_display.setTextCursor(cursor)
+            elif not all_lines and not buffer_lines:
+                # Show helpful message if no logs available
+                self.log_display.setText("No logs available yet. Start capturing images to see activity logs.")
                     
         except Exception as e:
             logger.error(f"Error updating logs: {e}")
+            self.log_display.setText(f"Error loading logs: {str(e)}")
     
     def clear_logs(self):
         """Clear log display"""
         self.log_display.clear()
         log_buffer.clear()
+    
+    def view_system_logs(self):
+        """View system/journal logs in external terminal"""
+        try:
+            # Try to open system logs in a new terminal window
+            import subprocess
+            
+            # Show a selection dialog
+            msg = QMessageBox()
+            msg.setIcon(QMessageBox.Icon.Question)
+            msg.setWindowTitle("System Logs")
+            msg.setText("Choose which system logs to view:")
+            
+            app_logs_btn = msg.addButton("Application Logs", QMessageBox.ButtonRole.ActionRole)
+            watchdog_logs_btn = msg.addButton("Watchdog Service Logs", QMessageBox.ButtonRole.ActionRole)
+            all_logs_btn = msg.addButton("All Bird Detection Logs", QMessageBox.ButtonRole.ActionRole)
+            cancel_btn = msg.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+            
+            msg.exec()
+            
+            cmd = None
+            if msg.clickedButton() == app_logs_btn:
+                cmd = ['gnome-terminal', '--', 'journalctl', '-f', '--identifier=bird-detection']
+            elif msg.clickedButton() == watchdog_logs_btn:
+                cmd = ['gnome-terminal', '--', 'journalctl', '-f', '-u', 'bird-detection-watchdog.service']
+            elif msg.clickedButton() == all_logs_btn:
+                cmd = ['gnome-terminal', '--', 'journalctl', '-f', '--identifier=bird-detection', '-u', 'bird-detection-watchdog.service']
+            
+            if cmd:
+                subprocess.Popen(cmd)
+                logger.info("Opened system logs in terminal")
+                
+        except Exception as e:
+            logger.error(f"Failed to open system logs: {e}")
+            QMessageBox.information(
+                self, 
+                "System Logs", 
+                f"Could not open system logs in terminal.\n\n"
+                f"You can view them manually with:\n"
+                f"journalctl -f --identifier=bird-detection\n"
+                f"journalctl -f -u bird-detection-watchdog.service\n\n"
+                f"Error: {str(e)}"
+            )
 
 class MainWindow(QMainWindow):
     """Main application window"""
@@ -2985,8 +4157,9 @@ class MainWindow(QMainWindow):
         current_dir = Path(__file__).parent.name
         self.base_title = f"Bird Detection System - {current_dir}"
         self.setWindowTitle(self.base_title)
-        self.setGeometry(100, 100, 1000, 750)  # Locked app size
-        self.setFixedSize(1000, 750)  # Lock app window size
+        self.setGeometry(100, 100, 1000, 750)  # Default app size
+        # Remove fixed size constraint to allow manual fullscreen/maximize
+        self.setMinimumSize(1000, 750)  # Set minimum instead of fixed
         
         # Clock timer
         self.clock_timer = QTimer()
@@ -3084,10 +4257,27 @@ class MainWindow(QMainWindow):
         self.logs_tab = LogsTab()
         self.tab_widget.addTab(self.logs_tab, "Logs")
         
+        # Connect tab change handler for lazy loading
+        self.tab_widget.currentChanged.connect(self.on_tab_changed)
+        
         layout.addWidget(self.tab_widget)
         
         # Status bar
         self.statusBar().showMessage("Initializing...")
+    
+    def on_tab_changed(self, index):
+        """Handle tab change - lazy load gallery when first accessed"""
+        # Check if this is the gallery tab (index 1)
+        if index == 1 and hasattr(self, 'gallery_tab') and not self.gallery_tab.gallery_loaded:
+            logger.info("Loading gallery for first time")
+            self.gallery_tab.load_today_photos()
+            self.gallery_tab.gallery_loaded = True
+        
+        # Check if this is the species tab (index 3) - refresh data when shown
+        elif index == 3 and hasattr(self, 'species_tab'):
+            self.species_tab.needs_refresh = True
+            # Trigger showEvent manually since PyQt may not always call it
+            self.species_tab.load_species()
     
     def setup_timers(self):
         """Setup update timers"""
@@ -3100,6 +4290,74 @@ class MainWindow(QMainWindow):
         self.slow_timer = QTimer()
         self.slow_timer.timeout.connect(self.update_slow_status)
         self.slow_timer.start(30000)  # Update every 30 seconds
+        
+        # Memory cleanup timer (every 5 minutes)
+        self.memory_cleanup_timer = QTimer()
+        self.memory_cleanup_timer.timeout.connect(self.periodic_memory_cleanup)
+        self.memory_cleanup_timer.start(300000)  # Every 5 minutes
+        
+        # Store all timers for cleanup
+        self.active_timers = [self.status_timer, self.slow_timer, self.memory_cleanup_timer]
+    
+    def periodic_memory_cleanup(self):
+        """Periodic memory cleanup to prevent leaks"""
+        try:
+            import gc
+            import psutil
+            import os
+            
+            # Get current memory usage
+            process = psutil.Process(os.getpid())
+            memory_mb = process.memory_info().rss / 1024 / 1024
+            
+            # Check gallery image count
+            gallery_images = 0
+            if hasattr(self, 'images_by_date'):
+                gallery_images = sum(len(images) for images in self.images_by_date.values())
+            
+            # Force garbage collection
+            collected = gc.collect()
+            
+            # Log memory status
+            if memory_mb > 300:  # Warning if over 300MB
+                logger.warning(f"High memory usage: {memory_mb:.1f}MB, gallery has {gallery_images} images, collected {collected} objects")
+                
+                # If memory is very high, suggest clearing old gallery data
+                if memory_mb > 500 and gallery_images > 200:
+                    logger.critical(f"CRITICAL: Memory usage {memory_mb:.1f}MB with {gallery_images} gallery images!")
+                    # Could auto-clear oldest date here if needed
+                    
+            elif memory_mb > 200:
+                logger.info(f"Memory usage: {memory_mb:.1f}MB, gallery has {gallery_images} images")
+            else:
+                logger.debug(f"Memory usage OK: {memory_mb:.1f}MB, collected {collected} objects")
+                
+        except Exception as e:
+            logger.error(f"Error during periodic memory cleanup: {e}")
+    
+    def cleanup_timers(self):
+        """Stop and cleanup all timers"""
+        timers_to_stop = []
+        
+        # Collect all timer attributes
+        for attr_name in dir(self):
+            attr = getattr(self, attr_name)
+            if isinstance(attr, QTimer):
+                timers_to_stop.append((attr_name, attr))
+        
+        # Stop all timers
+        for name, timer in timers_to_stop:
+            try:
+                if timer.isActive():
+                    timer.stop()
+                    logger.info(f"Stopped timer: {name}")
+            except Exception as e:
+                logger.error(f"Error stopping timer {name}: {e}")
+        
+        # Also check services tab if it exists
+        if hasattr(self, 'services_tab'):
+            if hasattr(self.services_tab, 'cleanup'):
+                self.services_tab.cleanup()
     
     def start_services(self):
         """Start all services"""
@@ -3270,13 +4528,11 @@ class MainWindow(QMainWindow):
     
     def update_clock(self):
         """Update window title with current time"""
-        from datetime import datetime
         current_time = datetime.now().strftime("%H:%M:%S")
         self.setWindowTitle(f"{self.base_title} - {current_time}")
     
     def check_cleanup_time(self):
         """Check if it's time to run storage cleanup"""
-        from datetime import datetime, date
         
         # Check if cleanup is enabled
         cleanup_enabled = self.config.get('storage', {}).get('cleanup_enabled', False)
@@ -3337,9 +4593,9 @@ class MainWindow(QMainWindow):
             self.camera_tab.on_photo_captured()
             self.camera_tab.on_motion_detected()  # Photo capture means motion was detected
         
-        # Add to gallery without full reload
-        if hasattr(self, 'gallery_tab'):
-            self.gallery_tab.add_new_image(image_path)
+        # Add to gallery immediately
+        if hasattr(self, 'gallery_tab') and self.gallery_tab:
+            self.gallery_tab.add_new_image_immediately(image_path)
         
         # Queue for upload
         self.uploader.queue_file(image_path)
@@ -3400,21 +4656,118 @@ class MainWindow(QMainWindow):
         """Handle application close"""
         logger.info("Shutting down application...")
         
-        # Stop camera thread
-        if self.camera_thread:
-            self.camera_thread.stop()
+        try:
+            # Comprehensive cleanup
+            self.cleanup_application()
+            
+            # Make sure Qt application closes
+            QApplication.processEvents()
+            
+            # Accept the event first
+            event.accept()
+            
+            # Add a small delay to ensure cleanup completes
+            QApplication.processEvents()
+            
+            # Force quit the application
+            QApplication.quit()
+            
+            # Give Qt a moment to process
+            import time
+            time.sleep(0.1)
+            
+            logger.info("Application cleanup completed")
+            
+        except Exception as e:
+            logger.error(f"Error during application close: {e}")
+        finally:
+            # If still not closed, force exit
+            import os
+            import sys
+            logger.info("Force terminating application")
+            
+            # Kill any remaining Python processes for this application
+            try:
+                import psutil
+                current_process = psutil.Process()
+                logger.info(f"Terminating process {current_process.pid}")
+                current_process.terminate()
+            except ImportError:
+                pass
+            
+            # Final force exit
+            os._exit(0)
+    
+    def resizeEvent(self, event):
+        """Handle window resize events to scale camera preview"""
+        super().resizeEvent(event)
         
-        # Stop timers
-        if hasattr(self, 'status_timer'):
-            self.status_timer.stop()
-        if hasattr(self, 'slow_timer'):
-            self.slow_timer.stop()
-        
-        # Stop services
-        self.camera_controller.disconnect()
-        self.email_handler.stop()
-        self.uploader.stop()
-        self.service_monitor.stop()
+        # Check if we have a camera preview and scale it based on window size
+        if hasattr(self, 'camera_tab') and hasattr(self.camera_tab, 'preview_label'):
+            # Consider the window "fullscreen-like" if it's significantly larger than default
+            current_size = event.size()
+            is_large = current_size.width() > 1200 or current_size.height() > 900
+            
+            self.camera_tab.preview_label.scale_for_fullscreen(is_large)
+            logger.debug(f"Window resized to {current_size.width()}x{current_size.height()}, large: {is_large}")
+    
+    def cleanup_application(self):
+        """Comprehensive cleanup of all resources"""
+        try:
+            logger.info("Starting application cleanup...")
+            
+            # Stop camera thread
+            if hasattr(self, 'camera_thread') and self.camera_thread:
+                logger.info("Stopping camera thread...")
+                self.camera_thread.stop()
+                if not self.camera_thread.wait(2000):  # Wait up to 2 seconds
+                    logger.warning("Camera thread did not stop gracefully")
+            
+            # Stop all timers
+            logger.info("Stopping all timers...")
+            self.cleanup_timers()
+            
+            # Stop camera controller
+            if hasattr(self, 'camera_controller') and self.camera_controller:
+                logger.info("Disconnecting camera controller...")
+                self.camera_controller.disconnect()
+            
+            # Stop email handler
+            if hasattr(self, 'email_handler') and self.email_handler:
+                logger.info("Stopping email handler...")
+                self.email_handler.stop()
+            
+            # Stop uploader
+            if hasattr(self, 'uploader') and self.uploader:
+                logger.info("Stopping uploader...")
+                self.uploader.stop()
+            
+            # Stop service monitor
+            if hasattr(self, 'service_monitor') and self.service_monitor:
+                logger.info("Stopping service monitor...")
+                self.service_monitor.stop()
+            
+            # Stop web server process if running
+            if hasattr(self, 'web_server_process') and self.web_server_process:
+                logger.info("Terminating web server...")
+                self.web_server_process.terminate()
+                self.web_server_process.wait()
+            
+            # Close all child windows/dialogs
+            for widget in QApplication.topLevelWidgets():
+                if widget != self:
+                    widget.close()
+            
+            # Force garbage collection
+            import gc
+            gc.collect()
+            
+            logger.info("Application cleanup completed")
+            
+        except Exception as e:
+            logger.error(f"Error during cleanup: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
         
         
         # Clean up services tab background threads

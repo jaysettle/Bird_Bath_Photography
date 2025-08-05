@@ -6,17 +6,214 @@ Species Tab - Display identified bird species with thumbnails
 import os
 import json
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
+from collections import defaultdict
+import re
 
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                            QScrollArea, QGroupBox, QGridLayout, QPushButton,
-                           QDialog, QSizePolicy)
+                           QDialog, QSizePolicy, QFrame)
 from PyQt6.QtCore import Qt, QSize, pyqtSignal, QThread, pyqtSlot, QTimer
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtGui import QPixmap, QPainter, QColor, QBrush, QPen, QFont, QPolygonF
+from PyQt6.QtCore import QPointF, QRectF
 
 from .logger import get_logger
 
 logger = get_logger(__name__)
+
+
+class BirdHeatmap(QWidget):
+    """Weekly bird activity heatmap showing 7 days x 24 hours"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(220)
+        self.setMaximumHeight(280)
+        self.setMaximumWidth(900)
+        self.daily_data = {}
+        self.max_count = 0
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet("QWidget { border-radius: 5px; }")
+        
+    def update_data(self, bird_identifier):
+        """Update heatmap with REAL timestamp data from IdentifiedSpecies folder photos"""
+        self.daily_data = defaultdict(lambda: defaultdict(int))
+        self.max_count = 0
+        
+        # Get data from IdentifiedSpecies folder file timestamps
+        identified_species_folder = Path('/home/jaysettle/BirdPhotos/IdentifiedSpecies')
+        
+        if identified_species_folder.exists():
+            # Process all photos in IdentifiedSpecies folder
+            for species_folder in identified_species_folder.iterdir():
+                if species_folder.is_dir():
+                    for photo_file in species_folder.glob('*.jpeg'):
+                        try:
+                            # Get file modification time (when photo was copied = when bird was identified)
+                            mod_time = datetime.fromtimestamp(photo_file.stat().st_mtime)
+                            
+                            # Only include last 7 days
+                            if (datetime.now() - mod_time).days <= 7:
+                                day_key = mod_time.strftime("%Y-%m-%d")
+                                hour = mod_time.hour
+                                
+                                # Increment the actual hour when this bird was identified
+                                self.daily_data[day_key][hour] += 1
+                                
+                                if self.daily_data[day_key][hour] > self.max_count:
+                                    self.max_count = self.daily_data[day_key][hour]
+                                    
+                        except Exception as e:
+                            logger.debug(f"Failed to process photo timestamp {photo_file}: {e}")
+        
+        # Fallback to database sightings if no IdentifiedSpecies photos found
+        if self.max_count == 0 and bird_identifier and hasattr(bird_identifier, 'database'):
+            bird_identifier.load_database()
+            sightings = bird_identifier.database.get('sightings', [])
+            
+            for sighting in sightings:
+                timestamp_str = sighting.get('timestamp', '')
+                if timestamp_str:
+                    try:
+                        dt = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                        if (datetime.now() - dt).days <= 7:
+                            day_key = dt.strftime("%Y-%m-%d")
+                            hour = dt.hour
+                            self.daily_data[day_key][hour] += 1
+                            if self.daily_data[day_key][hour] > self.max_count:
+                                self.max_count = self.daily_data[day_key][hour]
+                    except Exception as e:
+                        logger.debug(f"Failed to parse timestamp {timestamp_str}: {e}")
+        
+        logger.info(f"Heatmap updated with IdentifiedSpecies folder data: {len(self.daily_data)} days, max_count: {self.max_count}")
+        
+        # Convert defaultdict to regular dict for logging
+        regular_dict = {day: dict(hours) for day, hours in self.daily_data.items()}
+        logger.info(f"Real hourly data: {regular_dict}")
+        self.update()
+    
+    def paintEvent(self, event):
+        """Paint the heatmap"""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        width = self.width()
+        height = self.height()
+        
+        # Draw rounded background
+        painter.setPen(Qt.PenStyle.NoPen)
+        bg_color = self.palette().window().color().darker(105)
+        painter.setBrush(QBrush(bg_color))
+        painter.drawRoundedRect(0, 0, width, height, 5, 5)
+        
+        # Margins
+        left_margin = 80
+        top_margin = 35
+        right_margin = 20
+        bottom_margin = 45
+        
+        # Grid dimensions
+        grid_width = width - left_margin - right_margin
+        grid_height = height - top_margin - bottom_margin
+        
+        days = 7
+        hours = 24
+        cell_width = grid_width / hours
+        cell_height = grid_height / days
+        
+        # Draw bird icon and title
+        painter.setFont(QFont("Arial", 12, QFont.Weight.Bold))
+        painter.setPen(QPen(self.palette().windowText().color()))
+        
+        # Simple bird icon
+        bird_x, bird_y = 15, 10
+        painter.setBrush(QBrush(self.palette().windowText().color()))
+        painter.drawEllipse(bird_x, bird_y + 6, 12, 8)  # body
+        painter.drawEllipse(bird_x + 8, bird_y + 2, 6, 6)  # head
+        
+        # Title
+        painter.drawText(bird_x + 25, top_margin - 5, "Weekly Bird Activity Heatmap")
+        
+        # Draw day labels
+        painter.setFont(QFont("Arial", 10))
+        days_of_week = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+        today = datetime.now()
+        
+        for i in range(days):
+            day_date = today - timedelta(days=days-1-i)
+            day_name = days_of_week[day_date.weekday()]
+            day_str = f"{day_name} {day_date.strftime('%m/%d')}"
+            
+            y = top_margin + i * cell_height + cell_height/2
+            painter.drawText(5, int(y-5), left_margin-10, 20, 
+                           Qt.AlignmentFlag.AlignRight, day_str)
+        
+        # Draw hour labels (12-hour format)
+        painter.setFont(QFont("Arial", 8))
+        for hour in range(0, 24, 3):
+            x = left_margin + hour * cell_width + cell_width/2
+            if hour == 0:
+                hour_str = "12AM"
+            elif hour < 12:
+                hour_str = f"{hour}AM"
+            elif hour == 12:
+                hour_str = "12PM"
+            else:
+                hour_str = f"{hour-12}PM"
+            
+            painter.drawText(int(x-20), height-bottom_margin+5, 40, 20, 
+                           Qt.AlignmentFlag.AlignCenter, hour_str)
+        
+        # Draw heatmap cells
+        cells_with_data = 0
+        for day_idx in range(days):
+            day_date = today - timedelta(days=days-1-day_idx)
+            day_key = day_date.strftime("%Y-%m-%d")
+            
+            for hour in range(hours):
+                x = left_margin + hour * cell_width
+                y = top_margin + day_idx * cell_height
+                
+                # Get activity count
+                count = self.daily_data.get(day_key, {}).get(hour, 0)
+                if count > 0:
+                    cells_with_data += 1
+                
+                # Set brush and pen for cell drawing
+                painter.setPen(QPen(QColor(100, 100, 100), 1))  # Border
+                
+                # Color cells based on bird activity intensity
+                if count > 0:
+                    intensity = count / self.max_count
+                    # Green gradient - darker green = more activity
+                    green_intensity = int(255 * intensity)
+                    color = QColor(
+                        255 - green_intensity,  # Less red as activity increases
+                        255,                    # Keep green high
+                        255 - green_intensity   # Less blue as activity increases
+                    )
+                    painter.setBrush(QBrush(color))
+                else:
+                    color = QColor(248, 248, 248)  # Very light gray for no activity
+                    painter.setBrush(QBrush(color))
+                
+                # Draw cell background and border
+                cell_rect = QRectF(x, y, cell_width-1, cell_height-1)
+                painter.drawRect(cell_rect)
+                
+                # Draw count if > 0 with large, bold text
+                if count > 0:
+                    painter.setPen(QPen(QColor(0, 0, 0)))  # Black text
+                    painter.setFont(QFont("Arial", 10, QFont.Weight.Bold))  # Larger, bold
+                    painter.drawText(int(x), int(y), int(cell_width), int(cell_height), 
+                                   Qt.AlignmentFlag.AlignCenter, str(count))
+        
+        
+        # Draw legend
+        painter.setFont(QFont("Arial", 8))
+        painter.setPen(QPen(self.palette().windowText().color()))
+        painter.drawText(left_margin, height-20, grid_width, 20,
+                        Qt.AlignmentFlag.AlignCenter, "Time of Day")
 
 
 class ClickableLabel(QLabel):
@@ -71,23 +268,76 @@ class SpeciesTab(QWidget):
     def __init__(self, bird_identifier):
         super().__init__()
         self.bird_identifier = bird_identifier
+        self.first_load = True
+        self.last_species_count = 0
+        self.last_total_photos = 0
         self.setup_ui()
-        self.load_species()
         
     def setup_ui(self):
         """Set up the UI"""
         layout = QVBoxLayout()
         
-        # Header
+        # Header with statistics
+        header_layout = QVBoxLayout()
+        
+        # Title
         header = QLabel("Identified Bird Species")
         header.setStyleSheet("font-size: 18px; font-weight: bold; padding: 10px;")
-        layout.addWidget(header)
+        header_layout.addWidget(header)
+        
+        # Statistics section
+        self.stats_widget = QGroupBox("Species Statistics")
+        stats_layout = QGridLayout()
+        
+        # Create stat labels
+        self.total_species_label = QLabel("Total Species: 0")
+        self.total_sightings_label = QLabel("Total Sightings: 0")
+        self.today_sightings_label = QLabel("Today's Sightings: 0")
+        self.week_sightings_label = QLabel("This Week: 0")
+        self.most_common_label = QLabel("Most Common: None")
+        self.rare_species_label = QLabel("Rare Species: 0")
+        
+        # Style the labels
+        stat_style = "padding: 5px; font-size: 12px;"
+        for label in [self.total_species_label, self.total_sightings_label, 
+                     self.today_sightings_label, self.week_sightings_label,
+                     self.most_common_label, self.rare_species_label]:
+            label.setStyleSheet(stat_style)
+        
+        # Arrange in grid
+        stats_layout.addWidget(self.total_species_label, 0, 0)
+        stats_layout.addWidget(self.total_sightings_label, 0, 1)
+        stats_layout.addWidget(self.today_sightings_label, 0, 2)
+        stats_layout.addWidget(self.week_sightings_label, 1, 0)
+        stats_layout.addWidget(self.most_common_label, 1, 1)
+        stats_layout.addWidget(self.rare_species_label, 1, 2)
+        
+        self.stats_widget.setLayout(stats_layout)
+        header_layout.addWidget(self.stats_widget)
+        
+        # Heatmap
+        self.heatmap_widget = BirdHeatmap()
+        header_layout.addWidget(self.heatmap_widget)
+        
+        layout.addLayout(header_layout)
+        
+        # Status and refresh section
+        top_section = QHBoxLayout()
+        
+        # Status label
+        self.status_label = QLabel("Ready")
+        self.status_label.setStyleSheet("color: #666; padding: 5px;")
+        top_section.addWidget(self.status_label)
+        
+        top_section.addStretch()  # Push refresh button to the right
         
         # Refresh button
         refresh_btn = QPushButton("Refresh")
         refresh_btn.clicked.connect(self.load_species)
         refresh_btn.setMaximumWidth(100)
-        layout.addWidget(refresh_btn)
+        top_section.addWidget(refresh_btn)
+        
+        layout.addLayout(top_section)
         
         # Scroll area for species
         scroll = QScrollArea()
@@ -100,9 +350,32 @@ class SpeciesTab(QWidget):
         
         self.setLayout(layout)
         
+        # Track if we need to refresh when shown
+        self.needs_refresh = False
+    
+    def showEvent(self, event):
+        """Handle tab being shown - refresh if needed"""
+        super().showEvent(event)
+        if self.first_load:
+            self.load_species()
+            self.first_load = False
+        elif self.needs_refresh:
+            # Check if there are actual changes before refreshing
+            if self._has_new_photos():
+                self.load_species()
+            self.needs_refresh = False
+        
     def load_species(self):
         """Load and display species from database"""
-        # Load immediately for better responsiveness
+        # Show loading status
+        self.status_label.setText("Loading species...")
+        self.status_label.setStyleSheet("color: #2196F3; padding: 5px;")  # Blue color
+        
+        # Process events to update UI immediately
+        from PyQt6.QtWidgets import QApplication
+        QApplication.processEvents()
+        
+        # Load species data
         self._load_species_deferred()
     
     def _load_species_deferred(self):
@@ -115,16 +388,26 @@ class SpeciesTab(QWidget):
                 
         if not self.bird_identifier:
             self.species_layout.addWidget(QLabel("Bird identifier not available"))
+            self.status_label.setText("Bird identifier not available")
+            self.status_label.setStyleSheet("color: #f44336; padding: 5px;")  # Red color
             return
             
         # Load database
         self.bird_identifier.load_database()
         species_dict = self.bird_identifier.database.get('species', {})
         
+        # Calculate and display statistics
+        self._update_statistics(species_dict)
+        
+        # Update heatmap
+        self.heatmap_widget.update_data(self.bird_identifier)
+        
         if not species_dict:
             no_species = QLabel("Be sure to configure your OpenAI API key for this feature in the Configuration tab.")
             no_species.setStyleSheet("color: gray; padding: 20px;")
             self.species_layout.addWidget(no_species)
+            self.status_label.setText("No species identified yet")
+            self.status_label.setStyleSheet("color: #666; padding: 5px;")
             return
             
         # Display each species
@@ -138,10 +421,8 @@ class SpeciesTab(QWidget):
             gallery_layout = QGridLayout(gallery_widget)
             gallery_layout.setSpacing(5)
             
-            # Get photo gallery or fall back to just last_photo
-            photo_gallery = species_data.get('photo_gallery', [])
-            if not photo_gallery and 'last_photo' in species_data:
-                photo_gallery = [species_data['last_photo']]
+            # Get photos from IdentifiedSpecies folder
+            photo_gallery = self._get_species_photos(species_data)
             
             # Filter out missing photos for better performance
             existing_photos = [path for path in photo_gallery[-9:] if os.path.exists(path)]
@@ -245,6 +526,142 @@ class SpeciesTab(QWidget):
             self.species_layout.addWidget(species_group)
             
         self.species_layout.addStretch()
+        
+        # Update status and tracking counts when done
+        species_count = len(species_dict)
+        total_photos = sum(len(data.get('photo_gallery', [])) for data in species_dict.values())
+        
+        self.last_species_count = species_count
+        self.last_total_photos = total_photos
+        
+        self.status_label.setText(f"Loaded {species_count} species")
+        self.status_label.setStyleSheet("color: #4CAF50; padding: 5px;")  # Green color
+    
+    def _has_new_photos(self):
+        """Check if there are new photos since last load"""
+        if not self.bird_identifier:
+            return False
+            
+        # Load current database state
+        self.bird_identifier.load_database()
+        species_dict = self.bird_identifier.database.get('species', {})
+        
+        # Count total photos
+        total_photos = 0
+        for species_data in species_dict.values():
+            gallery = species_data.get('photo_gallery', [])
+            total_photos += len(gallery)
+            
+        # Check if counts have changed
+        species_count = len(species_dict)
+        has_changes = (species_count != self.last_species_count or 
+                      total_photos != self.last_total_photos)
+        
+        return has_changes
+    
+    def _update_statistics(self, species_dict):
+        """Update species statistics"""
+        if not species_dict:
+            return
+            
+        # Calculate statistics
+        total_species = len(species_dict)
+        total_sightings = sum(data.get('sighting_count', 0) for data in species_dict.values())
+        
+        # Today's sightings
+        today = datetime.now().date()
+        today_sightings = 0
+        
+        # Week sightings
+        week_start = today - timedelta(days=7)
+        week_sightings = 0
+        
+        # Find most common species
+        most_common = None
+        max_sightings = 0
+        
+        # Count rare species (seen only once)
+        rare_species = 0
+        
+        for species_name, data in species_dict.items():
+            count = data.get('sighting_count', 0)
+            
+            # Most common
+            if count > max_sightings:
+                max_sightings = count
+                most_common = data.get('common_name', species_name)
+            
+            # Rare species
+            if count == 1:
+                rare_species += 1
+            
+            # Count recent sightings from IdentifiedSpecies folder
+            common_name = data.get('common_name', 'Unknown')
+            scientific_name = species_name  # species_name is the key
+            
+            # Create folder name matching the AI identifier logic
+            folder_name = f"{common_name}_{scientific_name}".replace(' ', '_').replace('/', '_')
+            folder_name = ''.join(c for c in folder_name if c.isalnum() or c in ['_', '-'])
+            
+            species_folder = Path('/home/jaysettle/BirdPhotos/IdentifiedSpecies') / folder_name
+            
+            if species_folder.exists():
+                for photo_file in species_folder.glob('*.jpeg'):
+                    try:
+                        # Get file modification time (when photo was copied = when bird was identified)
+                        mod_time = datetime.fromtimestamp(photo_file.stat().st_mtime)
+                        photo_date = mod_time.date()
+                        
+                        if photo_date == today:
+                            today_sightings += 1
+                        if photo_date >= week_start:
+                            week_sightings += 1
+                    except Exception as e:
+                        logger.debug(f"Error processing photo timestamp {photo_file}: {e}")
+        
+        # Update labels
+        self.total_species_label.setText(f"Total Species: {total_species}")
+        self.total_sightings_label.setText(f"Total Sightings: {total_sightings}")
+        self.today_sightings_label.setText(f"Today's Sightings: {today_sightings}")
+        self.week_sightings_label.setText(f"This Week: {week_sightings}")
+        self.most_common_label.setText(f"Most Common: {most_common or 'None'}")
+        self.rare_species_label.setText(f"Rare Species: {rare_species}")
+    
+    
+    def _get_species_photos(self, species_data):
+        """Get photos from IdentifiedSpecies folder for a species"""
+        photos = []
+        try:
+            common_name = species_data.get('common_name', 'Unknown')
+            scientific_name = species_data.get('scientific_name', 'unknown')
+            
+            # Create folder name matching the AI identifier logic
+            folder_name = f"{common_name}_{scientific_name}".replace(' ', '_').replace('/', '_')
+            folder_name = ''.join(c for c in folder_name if c.isalnum() or c in ['_', '-'])
+            
+            species_folder = Path('/home/jaysettle/BirdPhotos/IdentifiedSpecies') / folder_name
+            
+            if species_folder.exists():
+                # Get all JPEG files in the species folder, sorted by modification time (newest first)
+                photo_files = list(species_folder.glob('*.jpeg'))
+                photo_files.extend(species_folder.glob('*.jpg'))
+                photo_files.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+                photos = [str(p) for p in photo_files]
+            
+            # Fallback to database photo_gallery if IdentifiedSpecies folder is empty
+            if not photos:
+                photos = species_data.get('photo_gallery', [])
+                if not photos and 'last_photo' in species_data:
+                    photos = [species_data['last_photo']]
+                    
+        except Exception as e:
+            logger.debug(f"Error getting species photos: {e}")
+            # Fallback to database
+            photos = species_data.get('photo_gallery', [])
+            if not photos and 'last_photo' in species_data:
+                photos = [species_data['last_photo']]
+        
+        return photos
     
     def show_full_image(self, image_path):
         """Show full-size image in dialog"""

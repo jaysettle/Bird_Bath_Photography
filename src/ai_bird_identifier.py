@@ -8,6 +8,7 @@ import os
 import json
 import base64
 import logging
+import shutil
 from datetime import datetime
 from pathlib import Path
 import requests
@@ -266,7 +267,41 @@ class AIBirdIdentifier:
         if len(self.database['sightings']) > 1000:
             self.database['sightings'] = self.database['sightings'][-1000:]
         
+        # Copy identified bird photo to IdentifiedSpecies folder
+        self._copy_to_identified_species(bird_data, image_path)
+        
         self.save_database()
+    
+    def _copy_to_identified_species(self, bird_data: Dict, image_path: str):
+        """Copy identified bird photo to IdentifiedSpecies folder organized by species"""
+        try:
+            # Get species info for folder naming
+            common_name = bird_data.get('species_common', 'Unknown')
+            scientific_name = bird_data.get('species_scientific', 'unknown')
+            
+            # Create safe folder name (remove special characters)
+            folder_name = f"{common_name}_{scientific_name}".replace(' ', '_').replace('/', '_')
+            folder_name = ''.join(c for c in folder_name if c.isalnum() or c in ['_', '-'])
+            
+            # Create species folder path
+            species_folder = Path('/home/jaysettle/BirdPhotos/IdentifiedSpecies') / folder_name
+            species_folder.mkdir(parents=True, exist_ok=True)
+            
+            # Create destination filename with timestamp
+            source_path = Path(image_path)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            dest_filename = f"{timestamp}_{source_path.name}"
+            dest_path = species_folder / dest_filename
+            
+            # Copy the file
+            if source_path.exists():
+                shutil.copy2(image_path, dest_path)
+                logger.info(f"Copied identified bird photo to: {dest_path}")
+            else:
+                logger.warning(f"Source image not found: {image_path}")
+                
+        except Exception as e:
+            logger.error(f"Failed to copy bird photo to IdentifiedSpecies folder: {e}")
     
     def get_species_stats(self) -> Dict:
         """Get species diversity statistics"""
