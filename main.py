@@ -168,6 +168,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QTabWidget, QWidget,
                            QVBoxLayout, QHBoxLayout, QLabel, QSlider, QPushButton,
                            QTextEdit, QGroupBox, QGridLayout, QCheckBox, QSpinBox,
                            QProgressBar, QTableWidget, QTableWidgetItem, QHeaderView,
+                           QComboBox,
                            QSizePolicy,
                            QSplitter, QFrame, QLineEdit, QTimeEdit, QFileDialog, 
                            QMessageBox, QScrollArea, QDialog)
@@ -715,6 +716,40 @@ class CameraTab(QWidget):
         self.iso_max_value = QLabel("800")
         camera_layout.addWidget(self.iso_max_value, 5, 2)
         
+        # Resolution dropdown
+        camera_layout.addWidget(QLabel("Resolution:"), 6, 0)
+        self.resolution_combo = QComboBox()
+        # Add only verified DepthAI supported resolutions
+        resolutions = [
+            ("THE_4_K", "4K (4056×3040)"),
+            ("THE_12_MP", "12MP (4056×3040)"),
+            ("THE_13_MP", "13MP (4208×3120)"),
+            ("THE_1080_P", "1080p (1920×1080)"),
+            ("THE_720_P", "720p (1280×720)"),
+            ("THE_5_MP", "5MP (2592×1944)")
+        ]
+        for res_key, res_name in resolutions:
+            self.resolution_combo.addItem(res_name, res_key)
+        
+        # Set current resolution from config
+        current_res = self.config.get('camera', {}).get('resolution', '4k')
+        res_map = {
+            '4k': 'THE_4_K',
+            '12mp': 'THE_12_MP',
+            '13mp': 'THE_13_MP',
+            '1080p': 'THE_1080_P',
+            '720p': 'THE_720_P',
+            '5mp': 'THE_5_MP'
+        }
+        current_index = 0
+        for i in range(self.resolution_combo.count()):
+            if self.resolution_combo.itemData(i) == res_map.get(current_res, 'THE_4_K'):
+                current_index = i
+                break
+        self.resolution_combo.setCurrentIndex(current_index)
+        self.resolution_combo.currentIndexChanged.connect(self.on_resolution_changed)
+        camera_layout.addWidget(self.resolution_combo, 6, 1, 1, 2)
+        
         camera_group.setLayout(camera_layout)
         left_layout.addWidget(camera_group)
         
@@ -762,6 +797,7 @@ class CameraTab(QWidget):
         roi_layout.addWidget(self.reset_zoom_btn)
         
         motion_layout.addLayout(roi_layout, 3, 0, 1, 3)
+        
         
         motion_group.setLayout(motion_layout)
         left_layout.addWidget(motion_group)
@@ -1015,6 +1051,124 @@ class CameraTab(QWidget):
         if value < self.iso_min_slider.value():
             self.iso_min_slider.setValue(value)
     
+    def on_resolution_changed(self, index):
+        """Handle resolution dropdown change"""
+        resolution_key = self.resolution_combo.itemData(index)
+        resolution_name = self.resolution_combo.itemText(index)
+        
+        # Map DepthAI resolution keys to config values - only supported resolutions
+        key_to_config = {
+            'THE_4_K': '4k',
+            'THE_12_MP': '12mp', 
+            'THE_13_MP': '13mp',
+            'THE_1080_P': '1080p',
+            'THE_720_P': '720p',
+            'THE_5_MP': '5mp'
+        }
+        
+        config_value = key_to_config.get(resolution_key, '4k')
+        
+        # Show warning that camera will restart
+        reply = QMessageBox.question(
+            self, 
+            "Change Resolution",
+            f"Changing resolution to {resolution_name} will restart the camera.\n\nContinue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        
+        if reply == QMessageBox.StandardButton.Yes:
+            logger.info(f"Changing camera resolution to {resolution_name}")
+            
+            # Update config
+            self.config['camera']['resolution'] = config_value
+            
+            # Save config to file
+            try:
+                import json
+                config_path = os.path.join(os.path.dirname(__file__), 'config.json')
+                with open(config_path, 'w') as f:
+                    json.dump(self.config, f, indent=2)
+                logger.info(f"Config updated with new resolution: {config_value}")
+            except Exception as e:
+                logger.error(f"Failed to save config: {e}")
+            
+            # Get main window reference using window() method
+            main_window = self.window()
+            
+            try:
+                # Step 1: Stop and cleanup existing camera thread
+                if hasattr(main_window, 'camera_thread') and main_window.camera_thread:
+                    logger.info("Stopping existing camera thread...")
+                    # Disconnect all signals first
+                    try:
+                        main_window.camera_thread.frame_ready.disconnect()
+                        main_window.camera_thread.image_captured.disconnect()
+                    except:
+                        pass  # Signals may not be connected
+                    
+                    main_window.camera_thread.stop()
+                    if not main_window.camera_thread.wait(3000):  # Wait up to 3 seconds
+                        logger.warning("Camera thread did not stop gracefully")
+                    main_window.camera_thread = None
+                
+                # Step 2: Disconnect camera controller
+                if hasattr(self.camera_controller, 'device') and self.camera_controller.device:
+                    logger.info("Disconnecting camera controller...")
+                    self.camera_controller.disconnect()
+                
+                # Step 3: Update camera controller config
+                self.camera_controller.config['resolution'] = config_value
+                logger.info(f"Camera controller config updated to: {config_value}")
+                
+                # Step 4: Reconnect and setup new pipeline
+                if self.camera_controller.connect() and self.camera_controller.setup_pipeline():
+                    logger.info("Camera reconnected with new resolution")
+                    
+                    # Step 5: Create and start new camera thread
+                    main_window.camera_thread = CameraThread(self.camera_controller)
+                    main_window.camera_thread.frame_ready.connect(self.update_frame)
+                    main_window.camera_thread.image_captured.connect(main_window.on_image_captured)
+                    main_window.camera_thread.start()
+                    
+                    logger.info(f"Camera successfully restarted with resolution: {resolution_name}")
+                else:
+                    raise Exception("Failed to setup camera pipeline with new resolution")
+                    
+            except Exception as e:
+                logger.error(f"Failed to restart camera with new resolution: {e}")
+                QMessageBox.warning(self, "Camera Error", 
+                                  f"Failed to restart camera with {resolution_name}.\nError: {str(e)}")
+                
+                # Revert dropdown to previous selection
+                current_res = self.config.get('camera', {}).get('resolution', '4k')
+                res_map = {
+                    '4k': 'THE_4_K',
+                    '12mp': 'THE_12_MP',
+                    '13mp': 'THE_13_MP',
+                    '1080p': 'THE_1080_P',
+                    '720p': 'THE_720_P',
+                    '5mp': 'THE_5_MP'
+                }
+                for i in range(self.resolution_combo.count()):
+                    if self.resolution_combo.itemData(i) == res_map.get(current_res, 'THE_4_K'):
+                        self.resolution_combo.setCurrentIndex(i)
+                        break
+        else:
+            # Revert dropdown selection
+            current_res = self.config.get('camera', {}).get('resolution', '4k')
+            res_map = {
+                '4k': 'THE_4_K',
+                '12mp': 'THE_12_MP',
+                '13mp': 'THE_13_MP',
+                '1080p': 'THE_1080_P',
+                '720p': 'THE_720_P',
+                '5mp': 'THE_5_MP'
+            }
+            for i in range(self.resolution_combo.count()):
+                if self.resolution_combo.itemData(i) == res_map.get(current_res, 'THE_4_K'):
+                    self.resolution_combo.setCurrentIndex(i)
+                    break
+    
     def on_sensitivity_changed(self, value):
         """Handle sensitivity slider change"""
         # Display the inverted value (higher = more sensitive)
@@ -1042,6 +1196,11 @@ class CameraTab(QWidget):
             roi_rect = QRect(start_point, end_point).normalized()
             self.preview_label.roi_rect = roi_rect
             self.preview_label.update()
+            
+            # Trigger autofocus on ROI if enabled
+            if hasattr(self, 'roi_autofocus_cb') and self.roi_autofocus_cb.isChecked():
+                self.camera_controller.autofocus_roi()
+                logger.info("Autofocus triggered for new ROI")
             
             logger.info(f"ROI set: {start_point} to {end_point}")
     
@@ -1102,6 +1261,7 @@ class CameraTab(QWidget):
         """Reset camera preview zoom to 1.0x"""
         self.preview_label.reset_zoom()
         logger.info("Camera preview zoom reset")
+    
     
     def load_default_roi(self):
         """Load ROI from config and scale to current preview size"""
@@ -1742,22 +1902,30 @@ class GalleryTab(QWidget):
                 self.gallery_loaded = True
                 return
             
+            # Save dates to reload before clearing
+            loaded_dates_copy = self.loaded_dates.copy() if self.loaded_dates else {self.today_date}
+            
             # Clear current display
             self.clear_gallery()
             self.images_by_date.clear()
             self.date_widgets.clear()
             self.gallery_items.clear()
             self.selected_items.clear()
+            # Don't clear loaded_dates yet - we need it for reload
             self.current_focus_index = -1  # Reset focus
+            # Clear loaded image tracking so images can be reloaded
+            if hasattr(self, 'loaded_image_paths'):
+                self.loaded_image_paths.clear()
+            if hasattr(self, 'date_load_info'):
+                self.date_load_info.clear()
             self.update_selection_label()
-            
-            # Reload all previously loaded dates
-            loaded_dates_copy = self.loaded_dates.copy()
-            self.loaded_dates.clear()
             logger.info(f"Reloading dates: {loaded_dates_copy}")
             
             storage_dir = Path(self.config.get('storage', {}).get('save_dir', 
                                                str(Path.home() / 'BirdPhotos')))
+            
+            # Clear loaded_dates now that we have the copy
+            self.loaded_dates.clear()
             
             if storage_dir.exists():
                 # Reload each date that was previously loaded
@@ -1767,6 +1935,8 @@ class GalleryTab(QWidget):
                         logger.info(f"Reloading date: {date_str}")
                         self.load_date_folder(date_str, date_folder)
                         self.loaded_dates.add(date_str)
+                    else:
+                        logger.warning(f"Date folder no longer exists: {date_folder}")
             
             # Check if we should auto-load yesterday (if today has < 16 photos)
             today_count = len(self.images_by_date.get(self.today_date, []))
@@ -1793,7 +1963,16 @@ class GalleryTab(QWidget):
             logger.info(f"Images after refresh: {new_total_images}")
             
             # Update status
-            if new_total_images == old_total_images and old_total_images > 0 and today_count >= 16:
+            if new_total_images == 0:
+                # No images found at all
+                self.status_label.setText("No images found in gallery")
+                self.set_status_message("No images found - gallery may be empty", "#ff9800")
+                # Show empty message in gallery
+                empty_label = QLabel("No bird photos found.\nPhotos will appear here after motion detection captures.")
+                empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                empty_label.setStyleSheet("color: #999; font-size: 14px; padding: 50px;")
+                self.gallery_layout.addWidget(empty_label)
+            elif new_total_images == old_total_images and old_total_images > 0 and today_count >= 16:
                 # No new images found, show "up to date" message temporarily
                 self.status_label.setText("Gallery is up to date")
                 QTimer.singleShot(2000, lambda: self.status_label.setText(f"{new_total_images} images from {len(self.images_by_date)} days"))
@@ -2279,7 +2458,13 @@ class GalleryTab(QWidget):
         self.date_widgets.clear()
         self.gallery_items.clear()
         self.selected_items.clear()
+        self.loaded_dates.clear()
         self.current_focus_index = -1  # Reset focus
+        # Clear loaded image tracking
+        if hasattr(self, 'loaded_image_paths'):
+            self.loaded_image_paths.clear()
+        if hasattr(self, 'date_load_info'):
+            self.date_load_info.clear()
         self.update_selection_label()
         
         # Get storage directory
@@ -2329,8 +2514,7 @@ class GalleryTab(QWidget):
             self.images_by_date.clear()
         if hasattr(self, 'date_widgets'):
             self.date_widgets.clear()
-        if hasattr(self, 'loaded_dates'):
-            self.loaded_dates.clear()
+        # Note: loaded_dates is NOT cleared here - managed by refresh logic
         if hasattr(self, 'current_focus_index'):
             self.current_focus_index = -1
         
@@ -4156,8 +4340,10 @@ class MainWindow(QMainWindow):
         super().__init__()
         current_dir = Path(__file__).parent.name
         self.base_title = f"Bird Detection System - {current_dir}"
-        self.setWindowTitle(self.base_title)
         self.setGeometry(100, 100, 1000, 750)  # Default app size
+        # Set initial title with dimensions
+        current_time = datetime.now().strftime("%H:%M:%S")
+        self.setWindowTitle(f"{self.base_title} - {current_time} - 1000x750")
         # Remove fixed size constraint to allow manual fullscreen/maximize
         self.setMinimumSize(1000, 750)  # Set minimum instead of fixed
         
@@ -4527,9 +4713,20 @@ class MainWindow(QMainWindow):
         self.services_tab.update_watchdog_status()
     
     def update_clock(self):
-        """Update window title with current time"""
+        """Update window title with current time and dimensions"""
         current_time = datetime.now().strftime("%H:%M:%S")
-        self.setWindowTitle(f"{self.base_title} - {current_time}")
+        width = self.width()
+        height = self.height()
+        self.setWindowTitle(f"{self.base_title} - {current_time} - {width}x{height}")
+    
+    def resizeEvent(self, event):
+        """Handle window resize events to update dimensions in title"""
+        super().resizeEvent(event)
+        # Update title with new dimensions immediately
+        current_time = datetime.now().strftime("%H:%M:%S")
+        width = self.width()
+        height = self.height()
+        self.setWindowTitle(f"{self.base_title} - {current_time} - {width}x{height}")
     
     def check_cleanup_time(self):
         """Check if it's time to run storage cleanup"""

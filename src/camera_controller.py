@@ -108,6 +108,7 @@ class CameraController:
         self.ae_start_pt = (-1, -1)
         self.ae_end_pt = (-1, -1)
         
+        
         # Capture control
         self.last_capture_time = 0
         self.debounce_time = self.motion_config['debounce_time']
@@ -148,13 +149,18 @@ class CameraController:
             cam.setInterleaved(False)
             cam.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
             
-            # Set resolution
+            # Set resolution - only include supported resolutions
             resolution_map = {
                 '4k': dai.ColorCameraProperties.SensorResolution.THE_4_K,
                 '12mp': dai.ColorCameraProperties.SensorResolution.THE_12_MP,
-                '1080p': dai.ColorCameraProperties.SensorResolution.THE_1080_P
+                '13mp': dai.ColorCameraProperties.SensorResolution.THE_13_MP,
+                '1080p': dai.ColorCameraProperties.SensorResolution.THE_1080_P,
+                '720p': dai.ColorCameraProperties.SensorResolution.THE_720_P,
+                '5mp': dai.ColorCameraProperties.SensorResolution.THE_5_MP
             }
-            cam.setResolution(resolution_map[self.config['resolution']])
+            # Default to 4k if resolution not found
+            resolution = resolution_map.get(self.config['resolution'], dai.ColorCameraProperties.SensorResolution.THE_4_K)
+            cam.setResolution(resolution)
             
             if self.config['resolution'] == '12mp':
                 # cam.setSensorCrop(0.02662721835076809, 0.14473684132099152)  # Disabled to see full sensor
@@ -407,11 +413,14 @@ class CameraController:
             }
         
         try:
-            # Get sensor resolution string
+            # Get sensor resolution string - only supported resolutions
             resolution_display = {
-                '4k': '4056x3040',
-                '12mp': '4056x3040',
-                '1080p': '1920x1080'
+                '4k': '4056×3040',
+                '12mp': '4056×3040', 
+                '13mp': '4208×3120',
+                '1080p': '1920×1080',
+                '720p': '1280×720',
+                '5mp': '2592×1944'
             }
             
             return {
@@ -444,6 +453,7 @@ class CameraController:
         self.roi_end_pt = (-1, -1)
         self.motion_detector.reset()
         logger.info("ROI cleared")
+    
     
     def set_auto_exposure_region(self, start_pt, end_pt):
         """Set auto exposure region"""

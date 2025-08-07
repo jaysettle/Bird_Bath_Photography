@@ -13,6 +13,7 @@ import re
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                            QScrollArea, QGroupBox, QGridLayout, QPushButton,
                            QDialog, QSizePolicy, QFrame)
+from PyQt6.QtGui import QIcon
 from PyQt6.QtCore import Qt, QSize, pyqtSignal, QThread, pyqtSlot, QTimer
 from PyQt6.QtGui import QPixmap, QPainter, QColor, QBrush, QPen, QFont, QPolygonF
 from PyQt6.QtCore import QPointF, QRectF
@@ -262,6 +263,262 @@ class ImageDialog(QDialog):
         
         self.setLayout(layout)
 
+
+class SpeciesGalleryDialog(QDialog):
+    """Dialog to show all photos for a specific species"""
+    def __init__(self, species_data, all_photos, parent=None):
+        super().__init__(parent)
+        self.species_data = species_data
+        self.all_photos = all_photos
+        self.current_index = 0
+        
+        # Set window properties
+        species_name = species_data.get('common_name', species_data.get('species_common', 'Unknown Species'))
+        self.setWindowTitle(f"{species_name} - {len(all_photos)} photos")
+        self.setModal(True)
+        self.resize(900, 700)
+        
+        self.setup_ui()
+        self.load_current_image()
+    
+    def setup_ui(self):
+        """Setup the gallery dialog UI"""
+        layout = QVBoxLayout()
+        
+        # Title and navigation info
+        title_layout = QHBoxLayout()
+        species_name = self.species_data.get('common_name', self.species_data.get('species_common', 'Unknown Species'))
+        scientific_name = self.species_data.get('scientific_name', '')
+        
+        title_label = QLabel(f"{species_name}")
+        title_label.setStyleSheet("font-size: 16px; font-weight: bold; color: #2196F3;")
+        title_layout.addWidget(title_label)
+        
+        if scientific_name:
+            scientific_label = QLabel(f"({scientific_name})")
+            scientific_label.setStyleSheet("font-size: 12px; font-style: italic; color: #666;")
+            title_layout.addWidget(scientific_label)
+        
+        title_layout.addStretch()
+        
+        # Image counter
+        self.counter_label = QLabel()
+        self.counter_label.setStyleSheet("font-size: 12px; color: #999;")
+        title_layout.addWidget(self.counter_label)
+        
+        layout.addLayout(title_layout)
+        
+        # Image display area
+        self.image_label = QLabel()
+        self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.image_label.setStyleSheet("background-color: #000; border: 1px solid #555;")
+        self.image_label.setMinimumSize(600, 400)
+        layout.addWidget(self.image_label)
+        
+        # Image info and species details area
+        info_layout = QHBoxLayout()
+        
+        # Current image info
+        self.image_info = QLabel("Loading image info...")
+        self.image_info.setStyleSheet("background-color: #2b2b2b; border: 1px solid #444; padding: 8px; border-radius: 4px; color: #e0e0e0;")
+        self.image_info.setMaximumHeight(60)
+        self.image_info.setWordWrap(True)
+        info_layout.addWidget(self.image_info)
+        
+        # Species details  
+        species_info_text = []
+        if self.species_data.get('conservation_status'):
+            species_info_text.append(f"Conservation: {self.species_data['conservation_status']}")
+        if self.species_data.get('sighting_count'):
+            species_info_text.append(f"Sightings: {self.species_data['sighting_count']}")
+        if self.species_data.get('fun_facts'):
+            facts = self.species_data.get('fun_facts', [])
+            if facts and facts[0]:
+                species_info_text.append(f"Fun fact: {facts[0][:100]}...")
+        
+        self.species_info = QLabel(" | ".join(species_info_text) if species_info_text else "No additional species information available")
+        self.species_info.setStyleSheet("background-color: #2b2b2b; border: 1px solid #444; padding: 8px; border-radius: 4px; color: #e0e0e0;")
+        self.species_info.setMaximumHeight(60)
+        self.species_info.setWordWrap(True)
+        info_layout.addWidget(self.species_info)
+        
+        layout.addLayout(info_layout)
+        
+        # Navigation controls
+        nav_layout = QHBoxLayout()
+        
+        self.prev_btn = QPushButton("◀ Previous")
+        self.prev_btn.clicked.connect(self.previous_image)
+        nav_layout.addWidget(self.prev_btn)
+        
+        nav_layout.addStretch()
+        
+        # Thumbnail strip (show 10 at a time)
+        self.thumb_layout = QHBoxLayout()
+        self.thumb_layout.setSpacing(5)
+        self.thumb_scroll = QScrollArea()
+        self.thumb_widget = QWidget()
+        self.thumb_widget.setLayout(self.thumb_layout)
+        self.thumb_widget.setStyleSheet("background-color: #2b2b2b;")
+        self.thumb_scroll.setWidget(self.thumb_widget)
+        self.thumb_scroll.setFixedHeight(80)
+        self.thumb_scroll.setStyleSheet("background-color: #2b2b2b; border: 1px solid #444; border-radius: 4px;")
+        self.thumb_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.thumb_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        nav_layout.addWidget(self.thumb_scroll)
+        
+        nav_layout.addStretch()
+        
+        self.next_btn = QPushButton("Next ▶")
+        self.next_btn.clicked.connect(self.next_image)
+        nav_layout.addWidget(self.next_btn)
+        
+        layout.addLayout(nav_layout)
+        
+        # Close button
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        button_layout.addWidget(close_btn)
+        layout.addLayout(button_layout)
+        
+        self.setLayout(layout)
+        
+        # Load thumbnails
+        self.load_thumbnails()
+    
+    def load_thumbnails(self):
+        """Load thumbnail strip"""
+        self.thumb_buttons = []
+        for i, photo_path in enumerate(self.all_photos):
+            thumb_btn = QPushButton()
+            thumb_btn.setFixedSize(60, 45)
+            thumb_btn.clicked.connect(lambda checked, idx=i: self.go_to_image(idx))
+            
+            # Style the thumbnail buttons
+            thumb_btn.setStyleSheet("""
+                QPushButton {
+                    border: 2px solid #555;
+                    border-radius: 3px;
+                    background-color: #3a3a3a;
+                    color: #e0e0e0;
+                }
+                QPushButton:hover {
+                    border: 2px solid #2196F3;
+                }
+            """)
+            
+            try:
+                pixmap = QPixmap(photo_path)
+                if not pixmap.isNull():
+                    scaled = pixmap.scaled(56, 41, Qt.AspectRatioMode.KeepAspectRatio,
+                                         Qt.TransformationMode.FastTransformation)
+                    thumb_btn.setIcon(QIcon(scaled))
+                    thumb_btn.setIconSize(scaled.size())
+                else:
+                    thumb_btn.setText(str(i+1))
+                    thumb_btn.setStyleSheet(thumb_btn.styleSheet() + "color: #e0e0e0;")
+            except Exception:
+                thumb_btn.setText(str(i+1))
+                thumb_btn.setStyleSheet(thumb_btn.styleSheet() + "color: #e0e0e0;")
+            
+            self.thumb_buttons.append(thumb_btn)
+            self.thumb_layout.addWidget(thumb_btn)
+        
+        # Highlight the first image
+        if self.thumb_buttons:
+            self.highlight_current_thumbnail()
+    
+    def load_current_image(self):
+        """Load and display the current image"""
+        if 0 <= self.current_index < len(self.all_photos):
+            photo_path = self.all_photos[self.current_index]
+            
+            try:
+                pixmap = QPixmap(photo_path)
+                if not pixmap.isNull():
+                    # Scale to fit display area while maintaining aspect ratio
+                    scaled = pixmap.scaled(600, 400, Qt.AspectRatioMode.KeepAspectRatio,
+                                         Qt.TransformationMode.SmoothTransformation)
+                    self.image_label.setPixmap(scaled)
+                    
+                    # Update image info
+                    filename = os.path.basename(photo_path)
+                    file_size = os.path.getsize(photo_path) / 1024  # KB
+                    mod_time = datetime.fromtimestamp(os.path.getmtime(photo_path))
+                    self.image_info.setText(f"File: {filename} | Size: {file_size:.1f} KB | Modified: {mod_time.strftime('%Y-%m-%d %H:%M')}")
+                else:
+                    self.image_label.setText("Image not found")
+                    self.image_info.setText("Image file not found")
+            except Exception as e:
+                self.image_label.setText(f"Error loading image: {e}")
+                self.image_info.setText(f"Error: {e}")
+            
+            # Update counter and navigation buttons
+            self.counter_label.setText(f"{self.current_index + 1} of {len(self.all_photos)}")
+            self.prev_btn.setEnabled(self.current_index > 0)
+            self.next_btn.setEnabled(self.current_index < len(self.all_photos) - 1)
+            
+            # Highlight current thumbnail
+            self.highlight_current_thumbnail()
+    
+    def highlight_current_thumbnail(self):
+        """Highlight the current thumbnail in the strip"""
+        if hasattr(self, 'thumb_buttons'):
+            for i, btn in enumerate(self.thumb_buttons):
+                if i == self.current_index:
+                    btn.setStyleSheet("""
+                        QPushButton {
+                            border: 3px solid #2196F3;
+                            border-radius: 3px;
+                            background-color: #1565C0;
+                            color: #ffffff;
+                        }
+                    """)
+                else:
+                    btn.setStyleSheet("""
+                        QPushButton {
+                            border: 2px solid #555;
+                            border-radius: 3px;
+                            background-color: #3a3a3a;
+                            color: #e0e0e0;
+                        }
+                        QPushButton:hover {
+                            border: 2px solid #2196F3;
+                        }
+                    """)
+    
+    def previous_image(self):
+        """Go to previous image"""
+        if self.current_index > 0:
+            self.current_index -= 1
+            self.load_current_image()
+    
+    def next_image(self):
+        """Go to next image"""
+        if self.current_index < len(self.all_photos) - 1:
+            self.current_index += 1
+            self.load_current_image()
+    
+    def go_to_image(self, index):
+        """Go to specific image by index"""
+        if 0 <= index < len(self.all_photos):
+            self.current_index = index
+            self.load_current_image()
+    
+    def keyPressEvent(self, event):
+        """Handle keyboard navigation"""
+        if event.key() == Qt.Key.Key_Left:
+            self.previous_image()
+        elif event.key() == Qt.Key.Key_Right:
+            self.next_image()
+        elif event.key() == Qt.Key.Key_Escape:
+            self.accept()
+        else:
+            super().keyPressEvent(event)
+
+
 class SpeciesTab(QWidget):
     """Tab for displaying identified bird species"""
     
@@ -425,7 +682,12 @@ class SpeciesTab(QWidget):
             photo_gallery = self._get_species_photos(species_data)
             
             # Filter out missing photos for better performance
-            existing_photos = [path for path in photo_gallery[-9:] if os.path.exists(path)]
+            all_existing_photos = [path for path in photo_gallery if os.path.exists(path)]
+            total_available = len(all_existing_photos)
+            
+            # Show up to 8 images (leaving space for "Show More" if needed)
+            max_display = 8 if total_available > 9 else 9
+            existing_photos = all_existing_photos[-max_display:]
             
             # Create thumbnails for existing photos only
             row, col = 0, 0
@@ -458,8 +720,41 @@ class SpeciesTab(QWidget):
                     col = 0
                     row += 1
             
-            # Add empty labels to fill remaining slots (up to 3x3 grid)
+            # Add "Show More" button if there are more than 9 images
             total_photos = len(existing_photos)
+            if total_available > 9:
+                show_more_btn = QPushButton(f"+{total_available - 8}\nmore")
+                show_more_btn.setFixedSize(100, 75)
+                show_more_btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #2196F3;
+                        color: white;
+                        border: 2px solid #1976D2;
+                        border-radius: 8px;
+                        font-size: 11px;
+                        font-weight: bold;
+                    }
+                    QPushButton:hover {
+                        background-color: #1976D2;
+                        border-color: #1565C0;
+                    }
+                    QPushButton:pressed {
+                        background-color: #1565C0;
+                    }
+                """)
+                # Pass species data with both the original data and scientific name
+                show_more_btn.clicked.connect(
+                    lambda checked=False, sd=species_data, sn=scientific_name, ap=all_existing_photos: 
+                    self.show_species_gallery({**sd, 'scientific_name': sn}, ap)
+                )
+                gallery_layout.addWidget(show_more_btn, row, col)
+                col += 1
+                if col >= 3:
+                    col = 0
+                    row += 1
+                total_photos += 1  # Account for the button
+            
+            # Add empty labels to fill remaining slots (up to 3x3 grid)
             remaining_slots = 9 - total_photos
             
             for _ in range(remaining_slots):
@@ -666,4 +961,9 @@ class SpeciesTab(QWidget):
     def show_full_image(self, image_path):
         """Show full-size image in dialog"""
         dialog = ImageDialog(image_path, self)
+        dialog.exec()
+    
+    def show_species_gallery(self, species_data, all_photos):
+        """Show a gallery dialog with all photos for this species"""
+        dialog = SpeciesGalleryDialog(species_data, all_photos, self)
         dialog.exec()

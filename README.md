@@ -12,8 +12,15 @@ Automatically photograph and identify birds (or other things) at your bird bath 
 - Species galleries with photo collections
 - Mobile web interface for remote monitoring
 - Google Drive backup (optional)
-- Email reports with daily summaries (optional)
+- Email reports with hourly and daily summaries (optional)
 - Smart cleanup - deletes non-bird photos
+
+## Recent Updates
+- Camera resolution selector with all DepthAI formats
+- Fixed hourly email reports
+- Enhanced species gallery with dark theme
+- Real-time window dimensions in title bar
+- Improved gallery refresh after image deletion
 
 ## Quick Start
 
