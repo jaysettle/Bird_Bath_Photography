@@ -84,14 +84,17 @@ class CameraController:
         self.config = config['camera']
         self.motion_config = config['motion_detection']
         self.storage_config = config['storage']
-        
+
         # Camera state
         self.device = None
         self.pipeline = None
         self.preview_queue = None
         self.still_queue = None
         self.control_queue = None
-        
+
+        # Preview resolution (can be changed dynamically)
+        self.preview_resolution = 'THE_1250x1036'  # Default preview resolution
+
         # Motion detection
         self.motion_detector = MotionDetector(
             threshold=self.motion_config['threshold'],
@@ -117,7 +120,10 @@ class CameraController:
         self.control_lock = threading.Lock()
         self.last_control_time = 0
         self.control_delay = 0.1
-        
+        self.connection_error_count = 0
+        self.reconnect_attempts = 0
+        self.is_reconnecting = False
+
         # Callbacks
         self.motion_callback = None
         self.capture_callback = None
@@ -143,9 +149,20 @@ class CameraController:
             # Set orientation
             if self.config['orientation'] == 'rotate_180':
                 cam.setImageOrientation(dai.CameraImageOrientation.ROTATE_180_DEG)
-            
-            # Set preview size
-            cam.setPreviewSize(self.config['preview_width'], self.config['preview_height'])
+
+            # Set preview resolution
+            preview_res_map = {
+                'THE_1250x1036': (1250, 1036),
+                'THE_1080_P': (1920, 1080),
+                'THE_720_P': (1280, 720),
+                'THE_480_P': (640, 480),
+                'THE_400_P': (640, 400),
+                'THE_300_P': (640, 300)
+            }
+            preview_width, preview_height = preview_res_map.get(self.preview_resolution, (1250, 1036))
+
+            logger.info(f"Setting preview resolution: {self.preview_resolution} -> {preview_width}x{preview_height}")
+            cam.setPreviewSize(preview_width, preview_height)
             cam.setInterleaved(False)
             cam.setColorOrder(dai.ColorCameraProperties.ColorOrder.BGR)
             
@@ -188,7 +205,7 @@ class CameraController:
             control_in.setStreamName("control")
             control_in.out.link(cam.inputControl)
             
-            logger.info(f"Pipeline configured for {self.config['resolution']} resolution")
+            logger.info(f"Pipeline configured for {self.config['resolution']} capture resolution, {preview_width}x{preview_height} preview")
             return True
             
         except Exception as e:
@@ -215,6 +232,7 @@ class CameraController:
             
             # Initialize camera settings
             self._apply_initial_settings()
+            self._post_reconnect_setup()
             
             return True
             
@@ -255,16 +273,28 @@ class CameraController:
             logger.error(f"Failed to apply initial settings: {e}")
     
     def get_frame(self):
-        """Get current preview frame"""
+        """Get current preview frame with X_LINK error handling"""
         try:
             if not self.preview_queue:
                 return None
-                
+
             packet = self.preview_queue.tryGet()
             if packet is not None:
                 return packet.getCvFrame()
             return None
-            
+
+        except RuntimeError as e:
+            # X_LINK errors typically raise RuntimeError
+            error_msg = str(e).lower()
+            if ('x_link' in error_msg or 'xlink' in error_msg or
+                'x_link_error' in error_msg or 'connection' in error_msg or
+                'usb' in error_msg or 'device' in error_msg):
+                logger.error(f"X_LINK_ERROR detected (USB disconnect): {e}")
+                self._mark_disconnected()
+                raise ConnectionError(f"Camera USB disconnected: {e}")
+            else:
+                logger.error(f"Runtime error getting frame: {e}")
+                return None
         except Exception as e:
             logger.error(f"Error getting frame: {e}")
             return None
@@ -272,40 +302,98 @@ class CameraController:
     def process_motion(self, frame):
         """Process motion detection on frame"""
         if not self.roi_defined:
+            logger.debug("ROI not defined - no motion detection")
             return False
-        
+
         try:
             # Extract ROI
             x1, y1 = self.roi_start_pt
             x2, y2 = self.roi_end_pt
-            
-            # Ensure coordinates are within bounds
-            x1 = max(0, min(x1, self.config['preview_width'] - 1))
-            y1 = max(0, min(y1, self.config['preview_height'] - 1))
-            x2 = max(0, min(x2, self.config['preview_width'] - 1))
-            y2 = max(0, min(y2, self.config['preview_height'] - 1))
-            
-            roi_frame = frame[y1:y2, x1:x2]
-            
-            if roi_frame.size == 0:
+
+            # Get actual current preview dimensions
+            preview_res_map = {
+                'THE_1250x1036': (1250, 1036),
+                'THE_1080_P': (1920, 1080),
+                'THE_720_P': (1280, 720),
+                'THE_480_P': (640, 480),
+                'THE_400_P': (640, 400),
+                'THE_300_P': (640, 300)
+            }
+            current_width, current_height = preview_res_map.get(self.preview_resolution, (1250, 1036))
+
+            # Get actual frame dimensions
+            actual_height, actual_width = frame.shape[:2]
+
+            logger.debug(f"MOTION DEBUG: ROI=({x1},{y1})-({x2},{y2}), Expected={current_width}x{current_height}, Actual Frame={actual_width}x{actual_height}, Resolution={self.preview_resolution}")
+
+            # Check if frame dimensions don't match expected preview resolution
+            if actual_width != current_width or actual_height != current_height:
+                logger.warning(f"FRAME SIZE MISMATCH! Expected {current_width}x{current_height} but got {actual_width}x{actual_height}")
+
+                # Scale ROI coordinates to match actual frame size
+                scale_x = actual_width / current_width
+                scale_y = actual_height / current_height
+
+                x1_scaled = int(x1 * scale_x)
+                y1_scaled = int(y1 * scale_y)
+                x2_scaled = int(x2 * scale_x)
+                y2_scaled = int(y2 * scale_y)
+
+                logger.info(f"SCALING ROI: Original=({x1},{y1})-({x2},{y2}) -> Scaled=({x1_scaled},{y1_scaled})-({x2_scaled},{y2_scaled})")
+
+                x1, y1, x2, y2 = x1_scaled, y1_scaled, x2_scaled, y2_scaled
+
+            # Ensure coordinates are within bounds of actual frame
+            x1 = max(0, min(x1, actual_width - 1))
+            y1 = max(0, min(y1, actual_height - 1))
+            x2 = max(0, min(x2, actual_width - 1))
+            y2 = max(0, min(y2, actual_height - 1))
+
+            logger.debug(f"ROI coordinates after bounds check: ({x1},{y1}) to ({x2},{y2}) - frame size: {frame.shape}")
+
+            # Ensure x2 > x1 and y2 > y1
+            if x2 <= x1 or y2 <= y1:
+                logger.warning(f"Invalid ROI dimensions: ({x1},{y1}) to ({x2},{y2})")
                 return False
-            
+
+            roi_frame = frame[y1:y2, x1:x2]
+
+            if roi_frame.size == 0:
+                logger.warning(f"ROI frame is empty: ({x1},{y1}) to ({x2},{y2})")
+                return False
+
+            logger.debug(f"ROI frame size: {roi_frame.shape}")
+
             # Detect motion
             motion_detected, contours = self.motion_detector.detect(roi_frame)
-            
+
             if motion_detected:
+                # Log contour details
+                contour_info = []
+                for i, contour in enumerate(contours):
+                    area = cv2.contourArea(contour)
+                    x_cont, y_cont, w_cont, h_cont = cv2.boundingRect(contour)
+                    # Convert relative ROI coordinates back to absolute frame coordinates
+                    abs_x = x1 + x_cont
+                    abs_y = y1 + y_cont
+                    contour_info.append(f"Contour{i}: area={area:.0f}, roi_pos=({x_cont},{y_cont},{w_cont}x{h_cont}), abs_pos=({abs_x},{abs_y},{w_cont}x{h_cont})")
+
+                logger.info(f"Motion contours detected: {len(contours)} total. Details: {'; '.join(contour_info)}")
+
                 current_time = time.time()
                 if current_time - self.last_capture_time >= self.debounce_time:
-                    logger.info("Motion detected in ROI - triggering capture")
+                    logger.info(f"Motion detected in ROI ({x1},{y1})-({x2},{y2}) - triggering capture")
                     self.capture_still()
                     self.last_capture_time = current_time
-                    
+
                     # Call motion callback if set
                     if self.motion_callback:
                         self.motion_callback(contours)
-                    
+
                     return True
-            
+                else:
+                    logger.debug(f"Motion detected but debounce active: {current_time - self.last_capture_time:.1f}s < {self.debounce_time}s")
+
             return False
             
         except Exception as e:
@@ -457,33 +545,71 @@ class CameraController:
     
     def set_auto_exposure_region(self, start_pt, end_pt):
         """Set auto exposure region"""
+        self.ae_start_pt = start_pt
+        self.ae_end_pt = end_pt
+        self.ae_defined = True
+        self._apply_auto_exposure_region()
+
+    def _apply_auto_exposure_region(self):
+        """Apply stored auto exposure region to the device"""
+        if not self.ae_defined or not self.control_queue:
+            return
+
         try:
-            self.ae_start_pt = start_pt
-            self.ae_end_pt = end_pt
-            self.ae_defined = True
-            
-            # Apply to camera
-            frame = self.get_frame()
-            if frame is not None:
-                frame_height, frame_width = frame.shape[:2]
-                
-                # Scale coordinates
-                scale_x = frame_width / self.config['preview_width']
-                scale_y = frame_height / self.config['preview_height']
-                
-                scaled_x = int(start_pt[0] * scale_x)
-                scaled_y = int(start_pt[1] * scale_y)
-                scaled_width = int((end_pt[0] - start_pt[0]) * scale_x)
-                scaled_height = int((end_pt[1] - start_pt[1]) * scale_y)
-                
-                ctrl = dai.CameraControl()
-                ctrl.setAutoExposureRegion(scaled_x, scaled_y, scaled_width, scaled_height)
-                self.control_queue.send(ctrl)
-                
-                logger.info(f"Auto exposure region set: {start_pt} to {end_pt}")
-                
+            preview_res_map = {
+                'THE_1250x1036': (1250, 1036),
+                'THE_1080_P': (1920, 1080),
+                'THE_720_P': (1280, 720),
+                'THE_480_P': (640, 480),
+                'THE_400_P': (640, 400),
+                'THE_300_P': (640, 300)
+            }
+
+            frame_width, frame_height = preview_res_map.get(
+                self.preview_resolution,
+                (1250, 1036)
+            )
+
+            ui_width = self.config.get('preview_width', 600)
+            ui_height = self.config.get('preview_height', 400)
+
+            scale_x = frame_width / max(1, ui_width)
+            scale_y = frame_height / max(1, ui_height)
+
+            start_pt = self.ae_start_pt
+            end_pt = self.ae_end_pt
+
+            scaled_x = int(start_pt[0] * scale_x)
+            scaled_y = int(start_pt[1] * scale_y)
+            scaled_width = int(max(1, (end_pt[0] - start_pt[0]) * scale_x))
+            scaled_height = int(max(1, (end_pt[1] - start_pt[1]) * scale_y))
+
+            ctrl = dai.CameraControl()
+            ctrl.setAutoExposureRegion(scaled_x, scaled_y, scaled_width, scaled_height)
+            self.control_queue.send(ctrl)
+
+            logger.info(
+                "Auto exposure region applied: UI(%s to %s) -> Device(%s, %s, %s x %s)",
+                start_pt, end_pt, scaled_x, scaled_y, scaled_width, scaled_height
+            )
+
         except Exception as e:
-            logger.error(f"Error setting auto exposure region: {e}")
+            logger.error(f"Error applying auto exposure region: {e}")
+
+    def _post_reconnect_setup(self):
+        """Restore runtime state after a successful reconnect"""
+        try:
+            # Reapply auto exposure region if one was previously defined
+            self._apply_auto_exposure_region()
+
+            # Reset motion detector background to avoid stale frames
+            if self.roi_defined:
+                self.motion_detector.reset()
+
+            logger.info("Post-reconnect camera state restored")
+
+        except Exception as e:
+            logger.error(f"Error during post-reconnect setup: {e}")
     
     def update_camera_setting(self, setting, value):
         """Update camera setting"""
@@ -532,15 +658,65 @@ class CameraController:
         self.motion_callback = motion_callback
         self.capture_callback = capture_callback
     
+    def is_connected(self):
+        """Check if camera is connected"""
+        return self.device is not None and self.preview_queue is not None
+
+    def reconnect(self, max_attempts=3, delay=2):
+        """Attempt to reconnect to the camera"""
+        if self.is_reconnecting:
+            logger.debug("Reconnection already in progress; skipping additional request")
+            return False
+
+        self.is_reconnecting = True
+
+        try:
+            logger.info(f"Attempting to reconnect camera (max {max_attempts} attempts)...")
+
+            # First disconnect cleanly
+            self.disconnect()
+
+            for attempt in range(1, max_attempts + 1):
+                logger.info(f"Reconnection attempt {attempt}/{max_attempts}")
+
+                try:
+                    # Wait before reconnecting to avoid thrashing USB bus
+                    time.sleep(delay)
+
+                    # Try to connect
+                    if self.connect():
+                        logger.info("Camera reconnected successfully!")
+                        self.reconnect_attempts = 0
+                        self._post_reconnect_setup()
+                        return True
+
+                except Exception as e:
+                    logger.error(f"Reconnection attempt {attempt} failed: {e}")
+
+            self.reconnect_attempts += 1
+            logger.error(f"Failed to reconnect after {max_attempts} attempts (failures: {self.reconnect_attempts})")
+            return False
+
+        finally:
+            self.is_reconnecting = False
+
     def disconnect(self):
         """Disconnect from camera"""
         try:
             if self.device:
                 self.device.close()
-                self.device = None
                 logger.info("Camera disconnected")
         except Exception as e:
             logger.error(f"Error disconnecting camera: {e}")
+
+        self._mark_disconnected()
+
+    def _mark_disconnected(self):
+        """Mark controller resources as disconnected"""
+        self.device = None
+        self.preview_queue = None
+        self.still_queue = None
+        self.control_queue = None
     
     def __del__(self):
         """Cleanup on destruction"""

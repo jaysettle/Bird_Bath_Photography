@@ -283,6 +283,54 @@ header h1 {
     text-align: center;
 }
 
+.gallery-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.gallery-count {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+}
+
+.gallery-tip {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    margin: -0.5rem 0 1rem;
+}
+
+.empty-state {
+    display: none;
+    text-align: center;
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+    padding: 2rem 1rem;
+}
+
+.gallery-collection {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+}
+
+.gallery-day {
+    margin-bottom: 1.5rem;
+}
+
+.gallery-day h3 {
+    font-size: 1rem;
+    margin-bottom: 0.75rem;
+    color: var(--text-secondary);
+    font-weight: 600;
+}
+
+.gallery-day-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0.5rem;
+}
+
 /* Logs Section */
 .logs-section {
     padding: 1rem;
@@ -714,7 +762,8 @@ header h1 {
         grid-template-columns: repeat(4, 1fr);
     }
     
-    .images-grid {
+    .images-grid,
+    .gallery-day-grid {
         grid-template-columns: repeat(5, 1fr);
     }
     

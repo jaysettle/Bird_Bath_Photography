@@ -78,6 +78,42 @@ def get_recent_images(limit=20):
         })
     return images
 
+def is_date_folder(path: Path) -> bool:
+    """Return True if path name matches YYYY-MM-DD format."""
+    if not path.is_dir():
+        return False
+    name = path.name
+    return (
+        len(name) == 10 and
+        name[4] == '-' and
+        name[7] == '-' and
+        name.replace('-', '').isdigit()
+    )
+
+
+def get_date_folders() -> list[Path]:
+    """Return date folders sorted newest first."""
+    if not IMAGES_DIR.exists():
+        return []
+    folders = [p for p in IMAGES_DIR.iterdir() if is_date_folder(p)]
+    # Sort by date descending (newest first). Names are ISO formatted so lexical works.
+    folders.sort(key=lambda p: p.name, reverse=True)
+    return folders
+
+
+def get_images_for_date(date_folder: Path) -> list[Path]:
+    """Return sorted image list (newest first) for a specific date folder."""
+    if not date_folder.exists() or not date_folder.is_dir():
+        return []
+
+    image_files = []
+    for pattern in ('*.jpeg', '*.jpg', '*.png'):
+        image_files.extend(date_folder.glob(pattern))
+
+    # Sort newest first using modification time, fallback to name
+    image_files.sort(key=lambda p: (p.stat().st_mtime, p.name), reverse=True)
+    return image_files
+
 def get_system_stats():
     """Get system statistics"""
     # CPU and Memory
@@ -182,6 +218,93 @@ def api_images():
     """Get recent images"""
     limit = request.args.get('limit', 20, type=int)
     return jsonify(get_recent_images(limit))
+
+
+@app.route('/api/gallery')
+def api_gallery():
+    """Paginated gallery view grouped by date."""
+    try:
+        limit = max(1, request.args.get('limit', 20, type=int))
+        offset = max(0, request.args.get('offset', 0, type=int))
+        requested_date = request.args.get('date')
+
+        date_folders = get_date_folders()
+        if not date_folders:
+            return jsonify({
+                'success': True,
+                'date': None,
+                'images': [],
+                'offset': 0,
+                'has_more': False,
+                'next_date': None,
+                'available_dates': [],
+                'remaining_dates': []
+            })
+
+        # Determine active date folder
+        active_folder = None
+        if requested_date:
+            for folder in date_folders:
+                if folder.name == requested_date:
+                    active_folder = folder
+                    break
+        if active_folder is None:
+            active_folder = date_folders[0]
+
+        images_for_date = get_images_for_date(active_folder)
+        total_for_date = len(images_for_date)
+
+        # Slice for pagination
+        paginated = images_for_date[offset:offset + limit]
+
+        def to_payload(image_path: Path):
+            rel_path = image_path.relative_to(IMAGES_DIR)
+            stat = image_path.stat()
+            return {
+                'filename': image_path.name,
+                'rel_path': str(rel_path),
+                'timestamp': datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                'size': stat.st_size
+            }
+
+        images_payload = [to_payload(path) for path in paginated]
+
+        new_offset = offset + len(images_payload)
+        has_more = new_offset < total_for_date
+
+        # Determine next date when this one is exhausted
+        next_date = None
+        remaining_dates = []
+        if not has_more:
+            # Build list of remaining dates after the current one
+            names = [folder.name for folder in date_folders]
+            try:
+                idx = names.index(active_folder.name)
+            except ValueError:
+                idx = -1
+
+            if idx >= 0:
+                remaining_dates = names[idx + 1:]
+                if remaining_dates:
+                    next_date = remaining_dates[0]
+
+        return jsonify({
+            'success': True,
+            'date': active_folder.name,
+            'images': images_payload,
+            'offset': new_offset if has_more else 0,
+            'has_more': has_more,
+            'next_date': next_date,
+            'available_dates': [folder.name for folder in date_folders],
+            'remaining_dates': remaining_dates
+        })
+
+    except Exception as exc:
+        logger.error(f"Error loading gallery: {exc}")
+        return jsonify({
+            'success': False,
+            'error': str(exc)
+        }), 500
 
 @app.route('/api/image/<path:image_path>')
 def api_image(image_path):

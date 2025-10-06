@@ -290,6 +290,31 @@ class InteractivePreviewLabel(QLabel):
         self.zoom_factor = 1.0
         self.update_size()
         logger.info("Preview zoom reset to 1.0x")
+
+    def set_preview_resolution(self, resolution):
+        """Update preview widget size based on camera resolution"""
+        # Map resolution to appropriate display size
+        resolution_display_map = {
+            'THE_1250x1036': (625, 518),   # Scale down by 2x for display
+            'THE_1080_P': (640, 360),       # Scale 1920x1080 to fit
+            'THE_720_P': (640, 360),        # Scale 1280x720
+            'THE_480_P': (640, 480),        # Keep 640x480
+            'THE_400_P': (640, 400),        # Keep 640x400
+            'THE_300_P': (640, 300)         # Keep 640x300
+        }
+
+        # Get display dimensions for this resolution
+        display_width, display_height = resolution_display_map.get(resolution, (600, 400))
+
+        # Update base dimensions
+        self.base_width = display_width
+        self.base_height = display_height
+        self.aspect_ratio = self.base_width / self.base_height
+
+        # Apply zoom and update size
+        self.update_size()
+
+        logger.info(f"Preview widget size updated to {display_width}x{display_height} for resolution {resolution}")
     
     def scale_roi(self, old_width, old_height, new_width, new_height):
         """Scale ROI coordinates when preview size changes"""
@@ -450,40 +475,82 @@ class CameraThread(QThread):
     frame_ready = pyqtSignal(np.ndarray)
     motion_detected = pyqtSignal(list)
     image_captured = pyqtSignal(str)
-    
+    connection_lost = pyqtSignal()  # Signal when connection is lost
+    connection_restored = pyqtSignal()  # Signal when connection is restored
+
     def __init__(self, camera_controller):
         super().__init__()
         self.camera_controller = camera_controller
         self.running = False
         self.mutex = QMutex()
+        self.connection_error_count = 0
+        self.last_reconnect_attempt = 0
+        self.reconnect_interval = 5  # Seconds between reconnection attempts
         
     def run(self):
-        """Main camera loop"""
+        """Main camera loop with USB disconnect handling"""
         self.running = True
-        
+        was_connected = True
+
         while self.running:
             try:
+                # Check if camera is connected
+                if not self.camera_controller.is_connected():
+                    if was_connected:
+                        logger.warning("Camera disconnected - attempting reconnection")
+                        self.connection_lost.emit()
+                        was_connected = False
+
+                    # Attempt reconnection if enough time has passed
+                    current_time = time.time()
+                    if current_time - self.last_reconnect_attempt >= self.reconnect_interval:
+                        self.last_reconnect_attempt = current_time
+
+                        if self.camera_controller.reconnect():
+                            logger.info("Camera reconnected successfully")
+                            self.connection_restored.emit()
+                            was_connected = True
+                            self.connection_error_count = 0
+                        else:
+                            logger.warning(f"Reconnection failed, will retry in {self.reconnect_interval} seconds")
+
+                    self.msleep(1000)  # Wait 1 second before next iteration
+                    continue
+
                 # Get frame
                 frame = self.camera_controller.get_frame()
                 if frame is not None:
                     self.frame_ready.emit(frame.copy())
-                    
+                    self.connection_error_count = 0  # Reset error count on successful frame
+
                     # Process motion detection
                     if self.camera_controller.process_motion(frame):
                         # Motion was detected and capture triggered
                         pass
-                    
+
                     # Normal frame rate when frames are available
                     self.msleep(33)  # ~30 FPS
                 else:
-                    # Longer delay when no frames available (camera disconnected)
+                    # Longer delay when no frames available
                     self.msleep(200)  # 5 FPS polling rate
-                
+
                 # Check for captured images
                 captured_image = self.camera_controller.get_captured_image()
                 if captured_image:
                     self.image_captured.emit(captured_image)
-                
+
+            except ConnectionError as e:
+                # Handle X_LINK/USB disconnect errors
+                logger.error(f"Camera connection error: {e}")
+                self.connection_error_count += 1
+
+                if self.connection_error_count == 1:
+                    logger.warning("Camera USB disconnected - will attempt automatic reconnection")
+                    self.connection_lost.emit()
+                    was_connected = False
+
+                self.msleep(1000)  # Wait before retry
+
             except Exception as e:
                 logger.error(f"Error in camera thread: {e}")
                 self.msleep(100)
@@ -617,17 +684,36 @@ class CameraTab(QWidget):
     def setup_ui(self):
         """Setup the camera tab UI"""
         main_layout = QVBoxLayout()
-        
+
+        # Connection status indicator
+        self.connection_status_label = QLabel("🟢 Camera Connected")
+        self.connection_status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.connection_status_label.setStyleSheet("""
+            QLabel {
+                background-color: #2E7D32;
+                color: white;
+                padding: 5px;
+                border-radius: 3px;
+                font-weight: bold;
+                font-size: 11px;
+            }
+        """)
+        self.connection_status_label.hide()  # Initially hidden
+        main_layout.addWidget(self.connection_status_label)
+
         # Top section - Preview sized to actual image
         preview_container = QWidget()
         preview_layout = QVBoxLayout(preview_container)
         preview_layout.setContentsMargins(0, 0, 0, 0)
-        
+
         # Camera preview label - centered
         preview_center_layout = QHBoxLayout()
         preview_center_layout.addStretch()
-        
+
         self.preview_label = InteractivePreviewLabel()
+        # Set initial preview size based on camera resolution
+        camera_res = getattr(self.camera_controller, 'preview_resolution', 'THE_1080_P')
+        self.preview_label.set_preview_resolution(camera_res)
         self.preview_label.roi_selected.connect(self.on_roi_selected)
         self.preview_label.focus_point_clicked.connect(self.on_focus_point_clicked)
         preview_center_layout.addWidget(self.preview_label)
@@ -696,28 +782,38 @@ class CameraTab(QWidget):
         self.wb_value = QLabel("6637K")
         camera_layout.addWidget(self.wb_value, 3, 2)
         
+        # Brightness slider
+        camera_layout.addWidget(QLabel("Brightness:"), 4, 0)
+        self.brightness_slider = QSlider(Qt.Orientation.Horizontal)
+        self.brightness_slider.setRange(-10, 10)
+        self.brightness_slider.setValue(0)
+        self.brightness_slider.valueChanged.connect(self.on_brightness_changed)
+        camera_layout.addWidget(self.brightness_slider, 4, 1)
+        self.brightness_value = QLabel("0")
+        camera_layout.addWidget(self.brightness_value, 4, 2)
+
         # ISO Min
-        camera_layout.addWidget(QLabel("ISO Min:"), 4, 0)
+        camera_layout.addWidget(QLabel("ISO Min:"), 5, 0)
         self.iso_min_slider = QSlider(Qt.Orientation.Horizontal)
         self.iso_min_slider.setRange(100, 3200)
         self.iso_min_slider.setValue(100)
         self.iso_min_slider.valueChanged.connect(self.on_iso_min_changed)
-        camera_layout.addWidget(self.iso_min_slider, 4, 1)
+        camera_layout.addWidget(self.iso_min_slider, 5, 1)
         self.iso_min_value = QLabel("100")
-        camera_layout.addWidget(self.iso_min_value, 4, 2)
-        
+        camera_layout.addWidget(self.iso_min_value, 5, 2)
+
         # ISO Max
-        camera_layout.addWidget(QLabel("ISO Max:"), 5, 0)
+        camera_layout.addWidget(QLabel("ISO Max:"), 6, 0)
         self.iso_max_slider = QSlider(Qt.Orientation.Horizontal)
         self.iso_max_slider.setRange(100, 3200)
         self.iso_max_slider.setValue(800)
         self.iso_max_slider.valueChanged.connect(self.on_iso_max_changed)
-        camera_layout.addWidget(self.iso_max_slider, 5, 1)
+        camera_layout.addWidget(self.iso_max_slider, 6, 1)
         self.iso_max_value = QLabel("800")
-        camera_layout.addWidget(self.iso_max_value, 5, 2)
-        
-        # Resolution dropdown
-        camera_layout.addWidget(QLabel("Resolution:"), 6, 0)
+        camera_layout.addWidget(self.iso_max_value, 6, 2)
+
+        # Capture Resolution dropdown
+        camera_layout.addWidget(QLabel("Capture:"), 7, 0)
         self.resolution_combo = QComboBox()
         # Add only verified DepthAI supported resolutions
         resolutions = [
@@ -730,7 +826,7 @@ class CameraTab(QWidget):
         ]
         for res_key, res_name in resolutions:
             self.resolution_combo.addItem(res_name, res_key)
-        
+
         # Set current resolution from config
         current_res = self.config.get('camera', {}).get('resolution', '4k')
         res_map = {
@@ -748,7 +844,26 @@ class CameraTab(QWidget):
                 break
         self.resolution_combo.setCurrentIndex(current_index)
         self.resolution_combo.currentIndexChanged.connect(self.on_resolution_changed)
-        camera_layout.addWidget(self.resolution_combo, 6, 1, 1, 2)
+        camera_layout.addWidget(self.resolution_combo, 7, 1, 1, 2)
+
+        # Preview Resolution dropdown
+        camera_layout.addWidget(QLabel("Preview:"), 8, 0)
+        self.preview_resolution_combo = QComboBox()
+        preview_resolutions = [
+            ("THE_1250x1036", "1250x1036"),
+            ("THE_1080_P", "1080p"),
+            ("THE_720_P", "720p"),
+            ("THE_480_P", "480p"),
+            ("THE_400_P", "400p"),
+            ("THE_300_P", "300p")
+        ]
+        for res_key, res_name in preview_resolutions:
+            self.preview_resolution_combo.addItem(res_name, res_key)
+
+        # Set default preview resolution (1250x1036)
+        self.preview_resolution_combo.setCurrentIndex(0)
+        # No immediate change handler - will apply on Save
+        camera_layout.addWidget(self.preview_resolution_combo, 8, 1, 1, 2)
         
         camera_group.setLayout(camera_layout)
         left_layout.addWidget(camera_group)
@@ -834,6 +949,12 @@ class CameraTab(QWidget):
         self.save_settings_btn.setMaximumHeight(30)
         self.save_settings_btn.clicked.connect(self.on_save_settings)
         action_layout.addWidget(self.save_settings_btn)
+
+        # Test button to verify dialogs work
+        self.test_dialog_btn = QPushButton("Test Dialog")
+        self.test_dialog_btn.setMaximumHeight(30)
+        self.test_dialog_btn.clicked.connect(self.test_dialog)
+        action_layout.addWidget(self.test_dialog_btn)
         
         action_group.setLayout(action_layout)
         right_layout.addWidget(action_group)
@@ -1036,7 +1157,12 @@ class CameraTab(QWidget):
         """Handle white balance slider change"""
         self.wb_value.setText(f"{value}K")
         self.camera_controller.update_camera_setting('white_balance', value)
-    
+
+    def on_brightness_changed(self, value):
+        """Handle brightness slider change"""
+        self.brightness_value.setText(str(value))
+        self.camera_controller.update_camera_setting('brightness', value)
+
     def on_iso_min_changed(self, value):
         """Handle ISO min slider change"""
         self.iso_min_value.setText(str(value))
@@ -1050,7 +1176,9 @@ class CameraTab(QWidget):
         # Ensure max >= min
         if value < self.iso_min_slider.value():
             self.iso_min_slider.setValue(value)
-    
+
+    # Preview resolution change is now handled in on_save_settings() instead
+
     def on_resolution_changed(self, index):
         """Handle resolution dropdown change"""
         resolution_key = self.resolution_combo.itemData(index)
@@ -1176,6 +1304,12 @@ class CameraTab(QWidget):
         self.sensitivity_value.setText(str(display_value))
         # Use original value for motion detection (lower = more sensitive)
         self.camera_controller.motion_detector.update_settings(threshold=value)
+
+    def on_debounce_changed(self, value):
+        """Handle debounce time slider change"""
+        self.debounce_value.setText(f"{value}.0s")
+        self.camera_controller.debounce_time = value
+        logger.info(f"Debounce time set to {value}s")
     
     
     def on_roi_selected(self, start_point, end_point):
@@ -1185,23 +1319,54 @@ class CameraTab(QWidget):
             self.preview_label.clear_roi()
             logger.info("ROI cleared")
         else:
-            # Convert preview coordinates to actual coordinates
-            # For now, just use the preview coordinates directly
+            # Get current camera preview resolution
+            preview_res_map = {
+                'THE_1250x1036': (1250, 1036),
+                'THE_1080_P': (1920, 1080),
+                'THE_720_P': (1280, 720),
+                'THE_480_P': (640, 480),
+                'THE_400_P': (640, 400),
+                'THE_300_P': (640, 300)
+            }
+
+            # Get camera resolution
+            camera_res = getattr(self.camera_controller, 'preview_resolution', 'THE_1080_P')
+            camera_width, camera_height = preview_res_map.get(camera_res, (1920, 1080))
+
+            # Get display widget size
+            display_width = self.preview_label.width()
+            display_height = self.preview_label.height()
+
+            logger.info(f"ROI Scaling: Display {display_width}x{display_height} -> Camera {camera_width}x{camera_height}")
+
+            # Scale ROI coordinates from display to camera resolution
+            scale_x = camera_width / display_width
+            scale_y = camera_height / display_height
+
+            camera_start_x = int(start_point.x() * scale_x)
+            camera_start_y = int(start_point.y() * scale_y)
+            camera_end_x = int(end_point.x() * scale_x)
+            camera_end_y = int(end_point.y() * scale_y)
+
+            logger.info(f"Display ROI: ({start_point.x()}, {start_point.y()}) to ({end_point.x()}, {end_point.y()})")
+            logger.info(f"Camera ROI: ({camera_start_x}, {camera_start_y}) to ({camera_end_x}, {camera_end_y})")
+
+            # Set ROI in camera controller with scaled coordinates
             self.camera_controller.set_roi(
-                (start_point.x(), start_point.y()),
-                (end_point.x(), end_point.y())
+                (camera_start_x, camera_start_y),
+                (camera_end_x, camera_end_y)
             )
-            
-            # Update the visual ROI rectangle on the preview
+
+            # Update the visual ROI rectangle on the preview (keep display coordinates)
             roi_rect = QRect(start_point, end_point).normalized()
             self.preview_label.roi_rect = roi_rect
             self.preview_label.update()
-            
+
             # Trigger autofocus on ROI if enabled
             if hasattr(self, 'roi_autofocus_cb') and self.roi_autofocus_cb.isChecked():
                 self.camera_controller.autofocus_roi()
                 logger.info("Autofocus triggered for new ROI")
-            
+
             logger.info(f"ROI set: {start_point} to {end_point}")
     
     def on_focus_point_clicked(self, point):
@@ -1320,11 +1485,39 @@ class CameraTab(QWidget):
                 
                 # Set ROI in preview label
                 self.preview_label.set_roi_rect(x, y, width, height)
-                
-                # Set ROI in camera controller
-                self.camera_controller.set_roi((x, y), (x + width, y + height))
-                
-                logger.info(f"Default ROI loaded: ({x}, {y}) to ({x + width}, {y + height})")
+
+                # Scale ROI coordinates from display to camera resolution
+                preview_res_map = {
+                    'THE_1250x1036': (1250, 1036),
+                    'THE_1080_P': (1920, 1080),
+                    'THE_720_P': (1280, 720),
+                    'THE_480_P': (640, 480),
+                    'THE_400_P': (640, 400),
+                    'THE_300_P': (640, 300)
+                }
+
+                # Get camera resolution
+                camera_res = getattr(self.camera_controller, 'preview_resolution', 'THE_1080_P')
+                camera_width, camera_height = preview_res_map.get(camera_res, (1920, 1080))
+
+                # Get display widget size
+                display_width = self.preview_label.width()
+                display_height = self.preview_label.height()
+
+                # Scale to camera coordinates
+                scale_x = camera_width / display_width
+                scale_y = camera_height / display_height
+
+                camera_x1 = int(x * scale_x)
+                camera_y1 = int(y * scale_y)
+                camera_x2 = int((x + width) * scale_x)
+                camera_y2 = int((y + height) * scale_y)
+
+                # Set ROI in camera controller with scaled coordinates
+                self.camera_controller.set_roi((camera_x1, camera_y1), (camera_x2, camera_y2))
+
+                logger.info(f"Display ROI loaded: ({x}, {y}) to ({x + width}, {y + height})")
+                logger.info(f"Camera ROI loaded: ({camera_x1}, {camera_y1}) to ({camera_x2}, {camera_y2})")
             else:
                 logger.info("Default ROI is disabled in config")
                 
@@ -1351,9 +1544,25 @@ class CameraTab(QWidget):
             self.focus_slider.setValue(camera_config.get('focus', 128))
             self.exposure_slider.setValue(camera_config.get('exposure_ms', 20))
             self.wb_slider.setValue(camera_config.get('white_balance', 6637))
+            self.brightness_slider.setValue(camera_config.get('brightness', 0))
+            self.brightness_value.setText(str(self.brightness_slider.value()))
             self.iso_min_slider.setValue(camera_config.get('iso_min', 100))
             self.iso_max_slider.setValue(camera_config.get('iso_max', 800))
-            
+
+            # Load preview resolution from config
+            saved_preview_res = camera_config.get('preview_resolution', 'THE_1250x1036')
+            logger.info(f"Loading saved preview resolution: {saved_preview_res}")
+
+            # Set the combo box to the saved value
+            for i in range(self.preview_resolution_combo.count()):
+                if self.preview_resolution_combo.itemData(i) == saved_preview_res:
+                    self.preview_resolution_combo.setCurrentIndex(i)
+                    logger.info(f"Set preview combo to index {i}: {self.preview_resolution_combo.itemText(i)}")
+                    break
+
+            # Also set it in the camera controller
+            self.camera_controller.preview_resolution = saved_preview_res
+
             # Load motion detection settings
             motion_config = self.config.get('motion_detection', {})
             threshold_value = motion_config.get('threshold', 50)
@@ -1361,11 +1570,22 @@ class CameraTab(QWidget):
             # Update display with inverted value
             display_value = 110 - threshold_value
             self.sensitivity_value.setText(str(display_value))
-            
+
             logger.info("Camera settings loaded from config")
         except Exception as e:
             logger.error(f"Failed to load camera settings: {e}")
     
+    def test_dialog(self):
+        """Test if dialogs work at all"""
+        logger.info("Testing dialog display...")
+        result = QMessageBox.information(
+            self,
+            "Test Dialog",
+            "This is a test dialog.\n\nIf you can see this, dialogs are working!",
+            QMessageBox.StandardButton.Ok
+        )
+        logger.info(f"Test dialog closed with result: {result}")
+
     def on_save_settings(self):
         """Save current settings"""
         try:
@@ -1387,7 +1607,12 @@ class CameraTab(QWidget):
             new_wb = self.wb_slider.value()
             if old_wb != new_wb:
                 changes.append(f"• White Balance: {old_wb}K → {new_wb}K")
-            
+
+            old_brightness = self.config['camera'].get('brightness', 0)
+            new_brightness = self.brightness_slider.value()
+            if old_brightness != new_brightness:
+                changes.append(f"• Brightness: {old_brightness} → {new_brightness}")
+
             old_iso_min = self.config['camera'].get('iso_min', 100)
             new_iso_min = self.iso_min_slider.value()
             if old_iso_min != new_iso_min:
@@ -1403,14 +1628,29 @@ class CameraTab(QWidget):
             new_threshold = self.sensitivity_slider.value()
             if old_threshold != new_threshold:
                 changes.append(f"• Motion Threshold: {old_threshold} → {new_threshold}")
-            
-            
+
+            # Check preview resolution changes
+            new_preview_res = self.preview_resolution_combo.itemData(self.preview_resolution_combo.currentIndex())
+            old_preview_res = getattr(self.camera_controller, 'preview_resolution', 'THE_1250x1036')
+            preview_changed = False
+
+            logger.info(f"Preview resolution check - Old: {old_preview_res}, New: {new_preview_res}")
+
+            if old_preview_res != new_preview_res:
+                old_name = {'THE_1250x1036': '1250x1036', 'THE_1080_P': '1080p', 'THE_720_P': '720p', 'THE_480_P': '480p', 'THE_400_P': '400p', 'THE_300_P': '300p'}.get(old_preview_res, '1250x1036')
+                new_name = self.preview_resolution_combo.currentText()
+                changes.append(f"• Preview Resolution: {old_name} → {new_name}")
+                preview_changed = True
+                logger.info(f"Preview resolution will change from {old_name} to {new_name}")
+
             # Update config with current values
             self.config['camera']['focus'] = new_focus
             self.config['camera']['exposure_ms'] = new_exposure
             self.config['camera']['white_balance'] = new_wb
+            self.config['camera']['brightness'] = new_brightness
             self.config['camera']['iso_min'] = new_iso_min
             self.config['camera']['iso_max'] = new_iso_max
+            self.config['camera']['preview_resolution'] = new_preview_res  # Save preview resolution to config
             self.config['motion_detection']['threshold'] = new_threshold
             
             # Save current ROI settings if defined
@@ -1441,20 +1681,273 @@ class CameraTab(QWidget):
                 json.dump(self.config, f, indent=4)
             
             logger.info("Settings saved to config.json")
-            
+
+            # If preview resolution changed, restart camera with new settings
+            if preview_changed:
+                logger.info(f"=== Starting camera restart for preview resolution change ===")
+                logger.info(f"New preview resolution: {new_preview_res}")
+
+                # Get main window reference
+                main_window = self.window()
+
+                try:
+                    # Stop camera thread
+                    logger.info("Step 1: Stopping camera thread...")
+                    if hasattr(main_window, 'camera_thread') and main_window.camera_thread:
+                        # Disconnect signals
+                        try:
+                            main_window.camera_thread.frame_ready.disconnect()
+                            main_window.camera_thread.image_captured.disconnect()
+                            logger.info("Disconnected camera thread signals")
+                        except Exception as e:
+                            logger.info(f"Signal disconnect: {e}")
+
+                        # Stop thread
+                        main_window.camera_thread.stop()
+                        main_window.camera_thread.wait(2000)
+                        main_window.camera_thread = None
+                        logger.info("Camera thread stopped")
+
+                    # Disconnect and reconnect camera with new preview settings
+                    logger.info("Step 2: Disconnecting camera device...")
+                    if hasattr(self.camera_controller, 'device') and self.camera_controller.device:
+                        self.camera_controller.disconnect()
+                        logger.info("Camera device disconnected")
+
+                    # Get old and new preview dimensions for ROI scaling
+                    old_preview_res_map = {
+                        'THE_1250x1036': (1250, 1036),
+                        'THE_1080_P': (1920, 1080),
+                        'THE_720_P': (1280, 720),
+                        'THE_480_P': (640, 480),
+                        'THE_400_P': (640, 400),
+                        'THE_300_P': (640, 300)
+                    }
+                    old_width, old_height = old_preview_res_map.get(old_preview_res, (1250, 1036))
+                    new_width, new_height = old_preview_res_map.get(new_preview_res, (1250, 1036))
+
+                    logger.info(f"ROI scaling: {old_width}x{old_height} -> {new_width}x{new_height}")
+
+                    # Update preview resolution in camera controller
+                    logger.info(f"Step 3: Updating camera controller preview resolution to {new_preview_res}")
+                    self.camera_controller.preview_resolution = new_preview_res
+
+                    # Update preview widget size for new resolution
+                    logger.info(f"Step 3a: Updating preview widget for resolution {new_preview_res}")
+                    self.preview_label.set_preview_resolution(new_preview_res)
+
+                    # Scale ROI if it exists
+                    if hasattr(self, 'preview_label') and not self.preview_label.roi_rect.isEmpty():
+                        old_roi = self.preview_label.roi_rect
+                        logger.info(f"Scaling ROI from: {old_roi}")
+
+                        # Get current display dimensions for scaling calculation
+                        old_display_width = self.preview_label.width()
+                        old_display_height = self.preview_label.height()
+
+                        # Calculate ROI scaling factors for the display
+                        display_scale_x = display_width / old_display_width
+                        display_scale_y = display_height / old_display_height
+
+                        # Scale ROI coordinates for display
+                        new_x = int(old_roi.x() * display_scale_x)
+                        new_y = int(old_roi.y() * display_scale_y)
+                        new_width_roi = int(old_roi.width() * display_scale_x)
+                        new_height_roi = int(old_roi.height() * display_scale_y)
+
+                        # Update the ROI rect for display
+                        self.preview_label.roi_rect = QRect(new_x, new_y, new_width_roi, new_height_roi)
+                        logger.info(f"Scaled ROI for display to: {self.preview_label.roi_rect}")
+
+                        # Convert ROI coordinates to camera resolution for camera controller
+                        # (ROI in camera coordinates should be proportional to camera resolution)
+                        cam_roi_scale_x = new_width / old_width
+                        cam_roi_scale_y = new_height / old_height
+
+                        # Get original ROI in old camera coordinates
+                        old_cam_scale_x = old_width / old_display_width
+                        old_cam_scale_y = old_height / old_display_height
+
+                        # Convert display ROI to camera coordinates
+                        cam_x = int(old_roi.x() * old_cam_scale_x * cam_roi_scale_x)
+                        cam_y = int(old_roi.y() * old_cam_scale_y * cam_roi_scale_y)
+                        cam_width = int(old_roi.width() * old_cam_scale_x * cam_roi_scale_x)
+                        cam_height = int(old_roi.height() * old_cam_scale_y * cam_roi_scale_y)
+
+                        # Update camera controller ROI with camera coordinates
+                        self.camera_controller.set_roi((cam_x, cam_y), (cam_x + cam_width, cam_y + cam_height))
+                        logger.info(f"Camera ROI set to: ({cam_x}, {cam_y}) to ({cam_x + cam_width}, {cam_y + cam_height})")
+
+                    # Reconnect
+                    logger.info("Step 4: Reconnecting camera with new settings...")
+                    if self.camera_controller.connect():
+                        # Restart camera thread
+                        logger.info("Step 5: Restarting camera thread...")
+                        main_window.camera_thread = CameraThread(self.camera_controller)
+                        main_window.camera_thread.frame_ready.connect(main_window.camera_tab.update_frame)
+                        main_window.camera_thread.image_captured.connect(main_window.on_image_captured)
+                        main_window.camera_thread.start()
+                        logger.info(f"=== Camera successfully restarted with preview resolution: {new_preview_res} ===")
+
+                        # Force ROI redraw after camera restart
+                        if hasattr(self, 'preview_label') and not self.preview_label.roi_rect.isEmpty():
+                            logger.info(f"Forcing ROI redraw after camera restart: {self.preview_label.roi_rect}")
+                            self.preview_label.update()  # Force repaint
+
+                    else:
+                        logger.error("Failed to reconnect camera with new preview resolution")
+                        QMessageBox.warning(self, "Camera Restart Failed", "Failed to restart camera with new preview resolution")
+
+                except Exception as e:
+                    logger.error(f"Error restarting camera: {e}")
+                    QMessageBox.warning(self, "Camera Restart Error", f"Error restarting camera: {str(e)}")
+
             # Show success message with changes
             if changes:
                 message = "Camera settings saved successfully!\n\nChanges made:\n" + "\n".join(changes)
+                if preview_changed:
+                    message += "\n\nCamera restarted with new preview resolution."
             else:
                 message = "Camera settings saved successfully!\n\nNo changes detected - all settings remain the same."
-            
-            QMessageBox.information(self, "Settings Saved", message)
-            
-            # Settings are applied immediately via slider change events
+
+            logger.info(f"Showing save confirmation dialog: {len(changes)} changes")
+            logger.info(f"Changes detected: {changes}")
+            logger.info(f"Dialog message: {message}")
+
+            # Create a custom notification instead of dialog
+            # Since dialogs aren't working, we'll use a label in the UI
+            self.show_save_notification(message, len(changes), preview_changed)
+
+            # Other settings are applied immediately via slider change events
             
         except Exception as e:
             logger.error(f"Failed to save settings: {e}")
             QMessageBox.critical(self, "Save Failed", f"Failed to save settings:\n{str(e)}")
+
+    def show_save_notification(self, message, changes_count, preview_changed):
+        """Show a visual save confirmation notification in the UI"""
+        try:
+            logger.info(f"Creating save notification UI - Changes: {changes_count}, Preview changed: {preview_changed}")
+
+            # Create or update notification label if it doesn't exist
+            if not hasattr(self, 'notification_label'):
+                # Create a notification area at the top of the camera tab
+                self.notification_label = QLabel()
+                self.notification_label.setWordWrap(True)
+                self.notification_label.setStyleSheet("""
+                    QLabel {
+                        background-color: #4CAF50;
+                        color: white;
+                        padding: 10px;
+                        border-radius: 5px;
+                        font-weight: bold;
+                        font-size: 12px;
+                    }
+                """)
+                self.notification_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                self.notification_label.hide()  # Initially hidden
+
+                # Insert at the top of the main layout
+                main_layout = self.layout()
+                if main_layout:
+                    main_layout.insertWidget(0, self.notification_label)
+                    logger.info("Added notification label to camera tab layout")
+
+            # Set the message
+            self.notification_label.setText(message)
+            self.notification_label.show()
+            logger.info("Showing save notification with message")
+
+            # Use a timer to auto-hide the notification after 5 seconds
+            if hasattr(self, 'notification_timer'):
+                self.notification_timer.stop()
+            else:
+                self.notification_timer = QTimer()
+                self.notification_timer.setSingleShot(True)
+                self.notification_timer.timeout.connect(self.hide_save_notification)
+
+            self.notification_timer.start(5000)  # Hide after 5 seconds
+            logger.info("Save notification displayed successfully")
+
+        except Exception as e:
+            logger.error(f"Failed to show save notification: {e}")
+
+    def hide_save_notification(self):
+        """Hide the save notification"""
+        try:
+            if hasattr(self, 'notification_label'):
+                self.notification_label.hide()
+                logger.info("Save notification hidden")
+        except Exception as e:
+            logger.error(f"Failed to hide save notification: {e}")
+
+    def on_camera_disconnected(self):
+        """Handle camera disconnection"""
+        try:
+            logger.warning("Camera disconnected - updating UI")
+            self.connection_status_label.setText("🔴 Camera Disconnected - Reconnecting...")
+            self.connection_status_label.setStyleSheet("""
+                QLabel {
+                    background-color: #C62828;
+                    color: white;
+                    padding: 5px;
+                    border-radius: 3px;
+                    font-weight: bold;
+                    font-size: 11px;
+                }
+            """)
+            self.connection_status_label.show()
+
+            # Disable camera controls
+            self.focus_slider.setEnabled(False)
+            self.exposure_slider.setEnabled(False)
+            self.wb_slider.setEnabled(False)
+            self.iso_min_slider.setEnabled(False)
+            self.iso_max_slider.setEnabled(False)
+            self.auto_exposure_cb.setEnabled(False)
+
+            # Show disconnected message in preview
+            self.preview_label.setText("Camera Disconnected\nAttempting to reconnect...")
+            self.preview_label.setPixmap(QPixmap())  # Clear current image
+
+        except Exception as e:
+            logger.error(f"Error handling camera disconnection: {e}")
+
+    def on_camera_reconnected(self):
+        """Handle camera reconnection"""
+        try:
+            logger.info("Camera reconnected - updating UI")
+            self.connection_status_label.setText("🟢 Camera Reconnected")
+            self.connection_status_label.setStyleSheet("""
+                QLabel {
+                    background-color: #2E7D32;
+                    color: white;
+                    padding: 5px;
+                    border-radius: 3px;
+                    font-weight: bold;
+                    font-size: 11px;
+                }
+            """)
+
+            # Hide status after 3 seconds
+            QTimer.singleShot(3000, self.connection_status_label.hide)
+
+            # Re-enable camera controls
+            self.focus_slider.setEnabled(True)
+            self.exposure_slider.setEnabled(True)
+            self.wb_slider.setEnabled(True)
+            self.iso_min_slider.setEnabled(True)
+            self.iso_max_slider.setEnabled(True)
+            self.auto_exposure_cb.setEnabled(True)
+
+            # Reset preview label text
+            self.preview_label.setText("Camera Preview")
+
+            # Reload camera settings to ensure they're applied
+            self.load_camera_settings()
+
+        except Exception as e:
+            logger.error(f"Error handling camera reconnection: {e}")
 
 class ImageViewerDialog(QDialog):
     """Full-size image viewer dialog with keyboard navigation"""
@@ -1694,6 +2187,9 @@ class GalleryTab(QWidget):
         self.loaded_dates = set()  # Track which dates have been loaded
         self.today_date = datetime.now().strftime('%Y-%m-%d')
         self.current_focus_index = -1  # Track currently focused item for arrow navigation
+        self.initial_batch_size = 30  # Images to load for the newest day
+        self.scroll_batch_size = 20   # Images to load per scroll batch
+        self.scroll_trigger_percent = 80  # Threshold percentage to trigger lazy load
         self.setup_ui()
         
         # Mark that gallery hasn't been loaded yet (lazy loading)
@@ -1933,7 +2429,7 @@ class GalleryTab(QWidget):
                     date_folder = storage_dir / date_str
                     if date_folder.exists() and date_folder.is_dir():
                         logger.info(f"Reloading date: {date_str}")
-                        self.load_date_folder(date_str, date_folder)
+                        self.load_date_folder(date_str, date_folder, limit=self.initial_batch_size)
                         self.loaded_dates.add(date_str)
                     else:
                         logger.warning(f"Date folder no longer exists: {date_folder}")
@@ -1954,7 +2450,7 @@ class GalleryTab(QWidget):
                     QApplication.processEvents()  # Force UI update
                     
                     # Load yesterday's photos
-                    self.load_date_folder(yesterday, yesterday_folder)
+                    self.load_date_folder(yesterday, yesterday_folder, limit=self.initial_batch_size)
                     self.loaded_dates.add(yesterday)
                     logger.info(f"Yesterday photos loaded via refresh, loaded_dates now: {self.loaded_dates}")
             
@@ -2019,7 +2515,7 @@ class GalleryTab(QWidget):
                 self.set_status_message("Loading today's photos...", "#ffcc00")
                 QApplication.processEvents()  # Force UI update
                 
-                self.load_date_folder(self.today_date, today_folder)
+                self.load_date_folder(self.today_date, today_folder, limit=self.initial_batch_size)
                 self.loaded_dates.add(self.today_date)
                 
                 # Check if we should load yesterday too (if today has < 16 photos)
@@ -2037,10 +2533,17 @@ class GalleryTab(QWidget):
                         self.progress_bar.setFormat("Loading yesterday's photos...")
                         QApplication.processEvents()  # Force UI update
                         
-                        # Load yesterday's photos (only 24 to start)
-                        has_more = self.load_date_folder(yesterday, yesterday_folder, limit=24, offset=0)
+                        # Load yesterday's photos (first batch)
+                        has_more = self.load_date_folder(
+                            yesterday,
+                            yesterday_folder,
+                            limit=self.initial_batch_size,
+                            offset=0
+                        )
                         self.loaded_dates.add(yesterday)
-                        logger.info(f"Yesterday photos loaded (24 images), has_more={has_more}")
+                        logger.info(
+                            f"Yesterday photos loaded ({self.initial_batch_size} images), has_more={has_more}"
+                        )
                 else:
                     logger.info(f"Not loading yesterday: count check={today_count < 16}, not in loaded={yesterday not in self.loaded_dates}")
                 
@@ -2076,16 +2579,19 @@ class GalleryTab(QWidget):
             logger.error(f"Error loading today's photos: {e}")
             self.set_status_message("Error loading photos", "#ff6464")
     
-    def load_date_folder(self, date_str, folder_path, limit=24, offset=0):
+    def load_date_folder(self, date_str, folder_path, limit=None, offset=0):
         """Load photos from a specific date folder with pagination
         
         Args:
             date_str: Date string (YYYY-MM-DD)
             folder_path: Path to the folder
-            limit: Maximum number of images to load (default 24)
+            limit: Maximum number of images to load (defaults to scroll batch size)
             offset: Starting offset for loading (default 0)
         """
         try:
+            if limit is None:
+                limit = self.scroll_batch_size
+
             logger.info(f"Loading date folder: {date_str} from path: {folder_path} (limit={limit}, offset={offset})")
             
             # Create date section if it doesn't exist
@@ -2227,6 +2733,10 @@ class GalleryTab(QWidget):
     def check_for_new_images(self):
         """Check for new images in today's folder only"""
         try:
+            # Skip auto-refresh until initial gallery load has occurred
+            if not getattr(self, 'gallery_loaded', False):
+                return
+
             storage_dir = Path(self.config.get('storage', {}).get('save_dir', 
                                                str(Path.home() / 'BirdPhotos')))
             
@@ -2239,15 +2749,28 @@ class GalleryTab(QWidget):
             # Check today's folder
             today_folder = storage_dir / self.today_date
             if today_folder.exists() and today_folder.is_dir():
-                # Count current images on disk
-                images_on_disk = len(list(today_folder.rglob('*.jpg')))
+                # Count current images on disk (match supported extensions)
+                image_extensions = ['*.jpg', '*.jpeg', '*.png', '*.gif', '*.bmp']
+                images_on_disk = 0
+                for ext in image_extensions:
+                    images_on_disk += len(list(today_folder.glob(f'**/{ext}')))
+
                 current_loaded = len(self.images_by_date.get(self.today_date, []))
-                
-                # Load new images if count differs
-                if images_on_disk > current_loaded:
-                    logger.info(f"Found {images_on_disk - current_loaded} new images for today")
-                    self.load_date_folder(self.today_date, today_folder)
-                    
+                date_info = getattr(self, 'date_load_info', {}).get(self.today_date, {})
+                known_total = date_info.get('total', current_loaded)
+
+                # Only load when new captures increase total files beyond what we've already catalogued
+                if images_on_disk > known_total:
+                    new_images = images_on_disk - known_total
+                    logger.info(f"Detected {new_images} new files for today")
+                    load_limit = min(self.scroll_batch_size, new_images)
+                    self.load_date_folder(
+                        self.today_date,
+                        today_folder,
+                        limit=load_limit,
+                        offset=0
+                    )
+
         except Exception as e:
             logger.error(f"Error checking for new images: {e}")
     
@@ -2292,16 +2815,16 @@ class GalleryTab(QWidget):
             scrollbar = self.scroll_area.verticalScrollBar()
             if scrollbar.maximum() > 0:
                 scroll_percentage = (value / scrollbar.maximum()) * 100
-                
-                # If scrolled past 80%, try to load more dates
-                if scroll_percentage > 80:
+
+                # If scrolled past threshold, try to load more dates
+                if scroll_percentage > self.scroll_trigger_percent:
                     self.load_previous_dates()
                     
         except Exception as e:
             logger.error(f"Error in scroll handler: {e}")
     
     def load_previous_dates(self):
-        """Load more photos (24 at a time) when scrolling down"""
+        """Load more photos (20 at a time) when scrolling down"""
         try:
             # Prevent concurrent loading
             if hasattr(self, 'is_loading_more') and self.is_loading_more:
@@ -2331,7 +2854,12 @@ class GalleryTab(QWidget):
                         offset = info['loaded']
                         logger.info(f"Loading more from {date_str}, offset={offset}")
                         
-                        has_more = self.load_date_folder(date_str, date_folder, limit=24, offset=offset)
+                        has_more = self.load_date_folder(
+                            date_str,
+                            date_folder,
+                            limit=self.scroll_batch_size,
+                            offset=offset
+                        )
                         self.is_loading_more = False
                         # Update status to show completion
                         total_images = sum(len(images) for images in self.images_by_date.values())
@@ -2364,7 +2892,12 @@ class GalleryTab(QWidget):
                     QApplication.processEvents()  # Force UI update
                     
                     # Load first batch (24 images) from new date
-                    has_more = self.load_date_folder(date_str, date_folder, limit=24, offset=0)
+                    has_more = self.load_date_folder(
+                        date_str,
+                        date_folder,
+                        limit=self.initial_batch_size,
+                        offset=0
+                    )
                     self.loaded_dates.add(date_str)
                     self.is_loading_more = False
                     # Update status to show completion
@@ -2391,7 +2924,7 @@ class GalleryTab(QWidget):
             scrollbar = self.scroll_area.verticalScrollBar()
             if scrollbar.maximum() > 0:
                 scroll_percentage = (scrollbar.value() / scrollbar.maximum()) * 100
-                if scroll_percentage > 80:
+                if scroll_percentage > self.scroll_trigger_percent:
                     # Still near bottom, load more
                     self.load_previous_dates()
         except Exception as e:
@@ -3265,14 +3798,29 @@ class ServicesTab(QWidget):
     
     def on_test_email(self):
         """Send test email"""
-        if self.email_handler:
-            test_info = {
-                'hostname': 'test-system',
-                'ip_address': '127.0.0.1',
-                'uptime': '5 minutes'
-            }
-            self.email_handler.send_reboot_notification(test_info)
-            logger.info("Test email sent")
+        try:
+            # First save the current configuration to ensure latest email credentials are used
+            self.save_config()
+
+            # Get the email handler from main window (which was just updated in save_config)
+            main_window = self.window()
+            if hasattr(main_window, 'email_handler') and main_window.email_handler:
+                test_info = {
+                    'hostname': 'test-system',
+                    'ip_address': '127.0.0.1',
+                    'uptime': '5 minutes'
+                }
+                result = main_window.email_handler.send_reboot_notification(test_info)
+                if result:
+                    QMessageBox.information(self, "Test Email", "Test email sent successfully!")
+                else:
+                    QMessageBox.warning(self, "Test Email", "Failed to send test email. Check logs for details.")
+                logger.info("Test email sent")
+            else:
+                QMessageBox.warning(self, "Test Email", "Email handler not initialized")
+        except Exception as e:
+            logger.error(f"Error sending test email: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to send test email: {str(e)}")
     
     def update_service_statuses(self):
         """Update all service status displays"""
@@ -3896,7 +4444,27 @@ class ConfigTab(QWidget):
                                       "The installer will open in a terminal window.\n"
                                       "Follow the prompts to complete installation.")
                 
-                subprocess.Popen(['x-terminal-emulator', '-e', f'bash {install_script}'])
+                # Try different terminal emulators in order of preference
+                terminals = [
+                    ['gnome-terminal', '--', 'bash', str(install_script)],
+                    ['x-terminal-emulator', '-e', f'bash {install_script}'],
+                    ['xterm', '-e', f'bash {install_script}'],
+                    ['konsole', '-e', f'bash {install_script}']
+                ]
+
+                success = False
+                for terminal_cmd in terminals:
+                    try:
+                        subprocess.Popen(terminal_cmd)
+                        success = True
+                        break
+                    except FileNotFoundError:
+                        continue
+
+                if not success:
+                    QMessageBox.critical(self, "Error", "No terminal emulator found.\n\n"
+                                                       "Please run the following command manually:\n\n"
+                                                       f"bash {install_script}")
                 
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to run installer: {str(e)}")
@@ -3972,17 +4540,18 @@ class ConfigTab(QWidget):
     def start_watchdog(self):
         """Start watchdog service and close app for automatic restart"""
         reply = QMessageBox.question(
-            self, "Start Watchdog Service", 
+            self, "Start Watchdog Service",
             "This will start the 24/7 monitoring service.\n\n"
             "The app will close and automatically reopen within 60 seconds.\n\n"
+            "You will be prompted for administrator password.\n\n"
             "Continue?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
-        
+
         if reply == QMessageBox.StandardButton.Yes:
             try:
-                # Start the watchdog service first
-                result = subprocess.run(['sudo', 'systemctl', 'start', 'bird-detection-watchdog.service'], 
+                # Use pkexec for graphical authentication
+                result = subprocess.run(['pkexec', 'systemctl', 'start', 'bird-detection-watchdog.service'],
                                       capture_output=True, text=True)
                 if result.returncode == 0:
                     # Show brief notification
@@ -3991,9 +4560,12 @@ class ConfigTab(QWidget):
                     msg.setWindowTitle("Watchdog Started")
                     msg.setText("Watchdog service started successfully!\n\nThis app will now close and reopen automatically.")
                     msg.show()
-                    
+
                     # Use QTimer to delay shutdown so message shows briefly
                     QTimer.singleShot(2000, self.force_shutdown_for_watchdog)
+                elif "dismissed" in result.stderr.lower() or result.returncode == 126:
+                    # User cancelled authentication
+                    logger.info("User cancelled watchdog start authentication")
                 else:
                     QMessageBox.critical(self, "Error", f"Failed to start service:\n{result.stderr}")
             except Exception as e:
@@ -4011,20 +4583,22 @@ class ConfigTab(QWidget):
         
         if reply == QMessageBox.StandardButton.Yes:
             try:
-                # Try to stop the service
-                result = subprocess.run(['sudo', 'systemctl', 'stop', 'bird-detection-watchdog.service'], 
+                # Try to stop the service using pkexec for graphical authentication
+                result = subprocess.run(['pkexec', 'systemctl', 'stop', 'bird-detection-watchdog.service'],
                                       capture_output=True, text=True)
                 if result.returncode == 0:
                     # Check if we're running under watchdog
                     if self.is_managed_by_watchdog():
-                        QMessageBox.information(self, "Stopping...", 
+                        QMessageBox.information(self, "Stopping...",
                                               "Watchdog service stopped!\n\n"
                                               "This application will now close as it was managed by the watchdog.")
                         # Close application since watchdog will kill it anyway
                         QApplication.quit()
                     else:
                         QMessageBox.information(self, "Success", "Watchdog service stopped!")
-                        self.check_watchdog_status()
+                elif "dismissed" in result.stderr.lower() or result.returncode == 126:
+                    # User cancelled authentication
+                    logger.info("User cancelled watchdog stop authentication")
                 else:
                     QMessageBox.critical(self, "Error", f"Failed to stop service:\n{result.stderr}")
             except Exception as e:
@@ -4182,17 +4756,26 @@ class ConfigTab(QWidget):
     
     def on_test_email(self):
         """Send test email"""
-        # Get email handler from main window
-        main_window = self.window()
-        if hasattr(main_window, 'email_handler') and main_window.email_handler:
-            test_info = {
-                'hostname': 'test-system',
-                'ip_address': '127.0.0.1',
-                'uptime': '5 minutes'
-            }
-            main_window.email_handler.send_reboot_notification(test_info)
-            QMessageBox.information(self, "Test Email", "Test email sent!")
-            logger.info("Test email sent")
+        try:
+            # Get email handler from main window
+            main_window = self.window()
+            if hasattr(main_window, 'email_handler') and main_window.email_handler:
+                test_info = {
+                    'hostname': 'test-system',
+                    'ip_address': '127.0.0.1',
+                    'uptime': '5 minutes'
+                }
+                result = main_window.email_handler.send_reboot_notification(test_info)
+                if result:
+                    QMessageBox.information(self, "Test Email", "Test email sent successfully!")
+                else:
+                    QMessageBox.warning(self, "Test Email", "Failed to send test email. Check logs for details.")
+                logger.info("Test email sent")
+            else:
+                QMessageBox.warning(self, "Test Email", "Email handler not initialized")
+        except Exception as e:
+            logger.error(f"Error sending test email: {e}")
+            QMessageBox.critical(self, "Error", f"Failed to send test email: {str(e)}")
 
 class LogsTab(QWidget):
     """Real-time logs tab"""
@@ -4340,10 +4923,10 @@ class MainWindow(QMainWindow):
         super().__init__()
         current_dir = Path(__file__).parent.name
         self.base_title = f"Bird Detection System - {current_dir}"
-        self.setGeometry(100, 100, 1000, 750)  # Default app size
+        self.setGeometry(100, 100, 1250, 1036)  # Default app size
         # Set initial title with dimensions
         current_time = datetime.now().strftime("%H:%M:%S")
-        self.setWindowTitle(f"{self.base_title} - {current_time} - 1000x750")
+        self.setWindowTitle(f"{self.base_title} - {current_time} - 1250x1036")
         # Remove fixed size constraint to allow manual fullscreen/maximize
         self.setMinimumSize(1000, 750)  # Set minimum instead of fixed
         
@@ -4553,8 +5136,11 @@ class MainWindow(QMainWindow):
                 self.camera_thread = CameraThread(self.camera_controller)
                 self.camera_thread.frame_ready.connect(self.camera_tab.update_frame)
                 self.camera_thread.image_captured.connect(self.on_image_captured)
+                # Connect USB disconnect/reconnect signals
+                self.camera_thread.connection_lost.connect(self.camera_tab.on_camera_disconnected)
+                self.camera_thread.connection_restored.connect(self.camera_tab.on_camera_reconnected)
                 self.camera_thread.start()
-                logger.info("Camera service started")
+                logger.info("Camera service started with USB disconnect handling")
             else:
                 logger.error("Failed to start camera service")
             

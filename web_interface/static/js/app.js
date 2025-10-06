@@ -3,6 +3,9 @@
 const STATS_REFRESH = 5000; // 5 seconds
 const IMAGES_REFRESH = 10000; // 10 seconds
 const LOGS_REFRESH = 3000; // 3 seconds
+const GALLERY_INITIAL_LIMIT = 30; // Initial load for most recent day
+const GALLERY_PAGE_LIMIT = 20;    // Subsequent batches while scrolling
+const GALLERY_SCROLL_THRESHOLD = 250; // px from bottom to fetch more
 
 // State
 let isRestarting = false;
@@ -10,6 +13,15 @@ let autoScroll = true;
 let currentTab = 'dashboard';
 let autoRefreshPreview = true;
 let previewInterval = null;
+
+const galleryState = {
+    currentDate: null,
+    offset: 0,
+    loading: false,
+    allLoaded: false,
+    totalLoaded: 0,
+    initialized: false
+};
 
 // DOM elements
 const elements = {
@@ -24,6 +36,11 @@ const elements = {
     driveFolder: document.getElementById('drive-folder'),
     driveUploaded: document.getElementById('drive-uploaded'),
     imagesGrid: document.getElementById('images-grid'),
+    galleryGrid: document.getElementById('gallery-grid'),
+    galleryEmpty: document.getElementById('gallery-empty'),
+    galleryCount: document.getElementById('gallery-count'),
+    galleryRefreshBtn: document.getElementById('gallery-refresh-btn'),
+    galleryTab: document.getElementById('gallery-tab'),
     logsContainer: document.getElementById('logs-container'),
     modal: document.getElementById('image-modal'),
     modalImg: document.getElementById('modal-image'),
@@ -57,6 +74,12 @@ document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('.tab-btn').forEach(btn => {
         btn.addEventListener('click', () => switchTab(btn.dataset.tab));
     });
+
+    if (elements.galleryRefreshBtn) {
+        elements.galleryRefreshBtn.addEventListener('click', refreshGallery);
+    }
+
+    window.addEventListener('scroll', handleGalleryScroll, { passive: true });
     
     // Autoscroll toggle
     const autoscrollToggle = document.getElementById('autoscroll-toggle');
@@ -111,6 +134,188 @@ async function loadImages() {
     } catch (error) {
         console.error('Error loading images:', error);
     }
+}
+
+// Reset gallery state and UI
+function resetGalleryState() {
+    galleryState.currentDate = null;
+    galleryState.offset = 0;
+    galleryState.loading = false;
+    galleryState.allLoaded = false;
+    galleryState.totalLoaded = 0;
+    galleryState.initialized = false;
+
+    if (elements.galleryGrid) {
+        elements.galleryGrid.innerHTML = '';
+    }
+    if (elements.galleryEmpty) {
+        elements.galleryEmpty.textContent = 'Loading gallery...';
+        elements.galleryEmpty.style.display = 'block';
+    }
+    if (elements.galleryCount) {
+        elements.galleryCount.textContent = '0 photos';
+    }
+}
+
+function ensureGalleryInitialized() {
+    if (!galleryState.initialized) {
+        resetGalleryState();
+        loadGallery({ initial: true });
+        galleryState.initialized = true;
+    }
+}
+
+function ensureDateSection(dateStr) {
+    if (!elements.galleryGrid) return null;
+    let section = elements.galleryGrid.querySelector(`[data-gallery-date="${dateStr}"]`);
+    if (!section) {
+        section = document.createElement('div');
+        section.className = 'gallery-day';
+        section.dataset.galleryDate = dateStr;
+
+        const header = document.createElement('h3');
+        header.textContent = dateStr;
+        section.appendChild(header);
+
+        const grid = document.createElement('div');
+        grid.className = 'gallery-day-grid';
+        section.appendChild(grid);
+
+        elements.galleryGrid.appendChild(section);
+    }
+    return section.querySelector('.gallery-day-grid');
+}
+
+function appendGalleryImages(dateStr, images) {
+    const grid = ensureDateSection(dateStr);
+    if (!grid || !Array.isArray(images)) return;
+
+    const fragment = document.createDocumentFragment();
+    images.forEach(img => {
+        const item = document.createElement('div');
+        item.className = 'image-item';
+        item.addEventListener('click', () => openImage(img.rel_path || img.filename, img.timestamp));
+
+        const imageEl = document.createElement('img');
+        imageEl.src = `/api/image/${img.rel_path || img.filename}`;
+        imageEl.alt = 'Bird capture';
+        imageEl.loading = 'lazy';
+
+        const ts = document.createElement('div');
+        ts.className = 'image-timestamp';
+        ts.textContent = formatTime(img.timestamp);
+
+        item.appendChild(imageEl);
+        item.appendChild(ts);
+        fragment.appendChild(item);
+    });
+
+    grid.appendChild(fragment);
+}
+
+async function loadGallery({ initial = false } = {}) {
+    if (!elements.galleryGrid || galleryState.loading || galleryState.allLoaded) return;
+
+    galleryState.loading = true;
+
+    if (elements.galleryEmpty) {
+        elements.galleryEmpty.style.display = 'block';
+    }
+
+    let shouldAutoLoadNext = false;
+
+    try {
+        const params = new URLSearchParams();
+        const limit = initial ? GALLERY_INITIAL_LIMIT : GALLERY_PAGE_LIMIT;
+        params.set('limit', limit);
+
+        if (galleryState.currentDate) {
+            params.set('date', galleryState.currentDate);
+        }
+        if (!initial && galleryState.offset) {
+            params.set('offset', galleryState.offset);
+        }
+
+        const response = await fetch(`/api/gallery?${params.toString()}`);
+        const data = await response.json();
+
+        if (!data.success) {
+            throw new Error(data.error || 'Gallery request failed');
+        }
+
+        if (!data.date) {
+            galleryState.allLoaded = true;
+            if (elements.galleryEmpty) {
+                elements.galleryEmpty.textContent = 'No photos captured yet.';
+            }
+            return;
+        }
+
+        if (Array.isArray(data.images) && data.images.length > 0) {
+            if (elements.galleryEmpty) {
+                elements.galleryEmpty.style.display = 'none';
+            }
+            appendGalleryImages(data.date, data.images);
+            galleryState.totalLoaded += data.images.length;
+            if (elements.galleryCount) {
+                const label = galleryState.totalLoaded === 1 ? 'photo' : 'photos';
+                elements.galleryCount.textContent = `${galleryState.totalLoaded} ${label}`;
+            }
+        } else if (initial) {
+            if (elements.galleryEmpty) {
+                elements.galleryEmpty.textContent = 'No photos captured for the latest day.';
+            }
+        }
+
+        // Prepare state for next fetch
+        if (data.has_more) {
+            galleryState.currentDate = data.date;
+            galleryState.offset = data.offset;
+        } else if (data.next_date) {
+            galleryState.currentDate = data.next_date;
+            galleryState.offset = 0;
+        } else {
+            galleryState.currentDate = null;
+            galleryState.offset = 0;
+            galleryState.allLoaded = true;
+        }
+
+        // Automatically continue if current date had no images but a next date exists
+        if ((!data.images || data.images.length === 0) && data.next_date) {
+            shouldAutoLoadNext = true;
+        }
+    } catch (error) {
+        console.error('Error loading gallery:', error);
+        if (elements.galleryEmpty) {
+            elements.galleryEmpty.textContent = 'Failed to load gallery.';
+            elements.galleryEmpty.style.display = 'block';
+        }
+        if (initial) {
+            galleryState.initialized = false;
+        }
+    } finally {
+        galleryState.loading = false;
+        if (shouldAutoLoadNext) {
+            loadGallery();
+        }
+    }
+}
+
+// Manual refresh for gallery
+async function refreshGallery() {
+    if (!elements.galleryRefreshBtn) return;
+
+    elements.galleryRefreshBtn.classList.add('loading');
+    elements.galleryRefreshBtn.disabled = true;
+
+    resetGalleryState();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    ensureGalleryInitialized();
+
+    setTimeout(() => {
+        elements.galleryRefreshBtn.classList.remove('loading');
+        elements.galleryRefreshBtn.disabled = false;
+    }, 400);
 }
 
 // Manual refresh for Recent Captures
@@ -293,6 +498,21 @@ function switchTab(tabName) {
         startPreviewRefresh();
     } else {
         stopPreviewRefresh();
+    }
+
+    if (tabName === 'gallery') {
+        ensureGalleryInitialized();
+    }
+}
+
+function handleGalleryScroll() {
+    if (currentTab !== 'gallery' || galleryState.loading || galleryState.allLoaded) return;
+
+    const scrollPosition = window.innerHeight + window.scrollY;
+    const triggerPoint = document.body.offsetHeight - GALLERY_SCROLL_THRESHOLD;
+
+    if (scrollPosition >= triggerPoint) {
+        loadGallery();
     }
 }
 
