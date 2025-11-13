@@ -46,6 +46,9 @@ class CleanupManager:
         try:
             total_count = 0
             for dirpath, dirnames, filenames in os.walk(self.save_dir):
+                # Skip IdentifiedSpecies folder to preserve species gallery
+                if 'IdentifiedSpecies' in dirpath:
+                    continue
                 for filename in filenames:
                     if filename.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp')):
                         total_count += 1
@@ -58,9 +61,13 @@ class CleanupManager:
         """Get oldest files sorted by creation time (including date subdirectories)"""
         try:
             all_files = []
-            
+
             # Walk through all subdirectories to find image files
             for dirpath, dirnames, filenames in os.walk(self.save_dir):
+                # Skip IdentifiedSpecies folder to preserve species gallery
+                if 'IdentifiedSpecies' in dirpath:
+                    continue
+
                 for filename in filenames:
                     if filename.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp')):
                         filepath = os.path.join(dirpath, filename)
@@ -170,10 +177,14 @@ class CleanupManager:
         """Clean up files older than specified days (including date subdirectories)"""
         try:
             cutoff_date = datetime.now() - timedelta(days=days_old)
-            
+
             all_files = []
             # Walk through all subdirectories to find image files
             for dirpath, dirnames, filenames in os.walk(self.save_dir):
+                # Skip IdentifiedSpecies folder to preserve species gallery
+                if 'IdentifiedSpecies' in dirpath:
+                    continue
+
                 for filename in filenames:
                     if filename.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp')):
                         filepath = os.path.join(dirpath, filename)

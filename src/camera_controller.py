@@ -93,7 +93,7 @@ class CameraController:
         self.control_queue = None
 
         # Preview resolution (can be changed dynamically)
-        self.preview_resolution = 'THE_1250x1036'  # Default preview resolution
+        self.preview_resolution = 'THE_1211x1013'  # Default preview resolution
 
         # Motion detection
         self.motion_detector = MotionDetector(
@@ -152,6 +152,7 @@ class CameraController:
 
             # Set preview resolution
             preview_res_map = {
+                'THE_1211x1013': (1211, 1013),
                 'THE_1250x1036': (1250, 1036),
                 'THE_1080_P': (1920, 1080),
                 'THE_720_P': (1280, 720),
@@ -159,7 +160,7 @@ class CameraController:
                 'THE_400_P': (640, 400),
                 'THE_300_P': (640, 300)
             }
-            preview_width, preview_height = preview_res_map.get(self.preview_resolution, (1250, 1036))
+            preview_width, preview_height = preview_res_map.get(self.preview_resolution, (1211, 1013))
 
             logger.info(f"Setting preview resolution: {self.preview_resolution} -> {preview_width}x{preview_height}")
             cam.setPreviewSize(preview_width, preview_height)
@@ -241,14 +242,15 @@ class CameraController:
             return False
     
     def _apply_initial_settings(self):
-        """Apply initial camera settings"""
+        """Apply initial camera settings with X_LINK error handling"""
         try:
             # Start with manual exposure to reset state
             ctrl = dai.CameraControl()
-            ctrl.setManualExposure(20000, 800)
+            initial_iso = self.config.get('iso_max', 800)
+            ctrl.setManualExposure(20000, initial_iso)
             self.control_queue.send(ctrl)
             time.sleep(0.1)
-            
+
             # Enable auto exposure
             ctrl = dai.CameraControl()
             ctrl.setAutoExposureEnable()
@@ -256,7 +258,7 @@ class CameraController:
             ctrl.setManualWhiteBalance(self.config['white_balance'])
             ctrl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)
             ctrl.setManualFocus(self.config['focus'])
-            
+
             # Set image quality settings
             ctrl.setSharpness(self.config['sharpness'])
             ctrl.setSaturation(self.config['saturation'])
@@ -264,11 +266,22 @@ class CameraController:
             ctrl.setBrightness(self.config['brightness'])
             ctrl.setLumaDenoise(self.config['luma_denoise'])
             ctrl.setChromaDenoise(self.config['chroma_denoise'])
-            
+
             self.control_queue.send(ctrl)
-            
+
             logger.info("Initial camera settings applied")
-            
+
+        except RuntimeError as e:
+            # X_LINK errors typically raise RuntimeError
+            error_msg = str(e).lower()
+            if ('x_link' in error_msg or 'xlink' in error_msg or
+                'x_link_error' in error_msg or 'connection' in error_msg or
+                'usb' in error_msg or 'device' in error_msg):
+                logger.error(f"X_LINK_ERROR in _apply_initial_settings (USB disconnect): {e}")
+                self._mark_disconnected()
+                raise ConnectionError(f"Camera USB disconnected: {e}")
+            else:
+                logger.error(f"Runtime error applying initial settings: {e}")
         except Exception as e:
             logger.error(f"Failed to apply initial settings: {e}")
     
@@ -312,6 +325,7 @@ class CameraController:
 
             # Get actual current preview dimensions
             preview_res_map = {
+                'THE_1211x1013': (1211, 1013),
                 'THE_1250x1036': (1250, 1036),
                 'THE_1080_P': (1920, 1080),
                 'THE_720_P': (1280, 720),
@@ -319,7 +333,7 @@ class CameraController:
                 'THE_400_P': (640, 400),
                 'THE_300_P': (640, 300)
             }
-            current_width, current_height = preview_res_map.get(self.preview_resolution, (1250, 1036))
+            current_width, current_height = preview_res_map.get(self.preview_resolution, (1211, 1013))
 
             # Get actual frame dimensions
             actual_height, actual_width = frame.shape[:2]
@@ -383,82 +397,114 @@ class CameraController:
                 current_time = time.time()
                 if current_time - self.last_capture_time >= self.debounce_time:
                     logger.info(f"Motion detected in ROI ({x1},{y1})-({x2},{y2}) - triggering capture")
-                    self.capture_still()
-                    self.last_capture_time = current_time
+                    try:
+                        self.capture_still()
+                        self.last_capture_time = current_time
 
-                    # Call motion callback if set
-                    if self.motion_callback:
-                        self.motion_callback(contours)
+                        # Call motion callback if set
+                        if self.motion_callback:
+                            self.motion_callback(contours)
 
-                    return True
+                        return True
+                    except ConnectionError as e:
+                        # Re-raise ConnectionError to be handled by camera thread
+                        logger.error(f"Connection error during motion capture: {e}")
+                        raise
                 else:
                     logger.debug(f"Motion detected but debounce active: {current_time - self.last_capture_time:.1f}s < {self.debounce_time}s")
 
             return False
-            
+
+        except ConnectionError:
+            # Re-raise ConnectionError to be handled by camera thread
+            raise
         except Exception as e:
             logger.error(f"Error processing motion: {e}")
             return False
     
     def capture_still(self):
-        """Capture still image"""
+        """Capture still image with X_LINK error handling"""
         try:
             if not self.control_queue:
                 return False
-                
+
             ctrl = dai.CameraControl()
             ctrl.setCaptureStill(True)
             self.control_queue.send(ctrl)
             logger.info("Still capture command sent")
             return True
-            
+
+        except RuntimeError as e:
+            # X_LINK errors typically raise RuntimeError
+            error_msg = str(e).lower()
+            if ('x_link' in error_msg or 'xlink' in error_msg or
+                'x_link_error' in error_msg or 'connection' in error_msg or
+                'usb' in error_msg or 'device' in error_msg):
+                logger.error(f"X_LINK_ERROR in capture_still (USB disconnect): {e}")
+                self._mark_disconnected()
+                raise ConnectionError(f"Camera USB disconnected: {e}")
+            else:
+                logger.error(f"Runtime error capturing still: {e}")
+                return False
         except Exception as e:
             logger.error(f"Error capturing still: {e}")
             return False
     
     def get_captured_image(self):
-        """Get captured still image"""
+        """Get captured still image with X_LINK error handling"""
         try:
             if not self.still_queue:
                 return None
-                
+
             packet = self.still_queue.tryGet()
             if packet is not None:
                 still_data = packet.getData()
                 decoded_frame = cv2.imdecode(
-                    np.frombuffer(still_data, dtype=np.uint8), 
+                    np.frombuffer(still_data, dtype=np.uint8),
                     cv2.IMREAD_COLOR
                 )
-                
+
                 if decoded_frame is not None:
                     # Save image with date-based organization
                     timestamp = int(time.time())
                     current_date = datetime.now().strftime('%Y-%m-%d')
                     date_dir = os.path.join(self.storage_config['save_dir'], current_date)
                     filename = os.path.join(
-                        date_dir, 
+                        date_dir,
                         f"motion_{timestamp}.jpeg"
                     )
-                    
+
                     # Ensure date directory exists
                     os.makedirs(date_dir, exist_ok=True)
-                    
+
                     # Add focus point overlay
                     overlay_frame = self.add_focus_overlay(decoded_frame)
-                    
+
                     if cv2.imwrite(filename, overlay_frame):
                         logger.info(f"Saved captured image: {filename}")
-                        
+
                         # Call capture callback if set
                         if self.capture_callback:
                             self.capture_callback(filename)
-                        
+
                         return filename
                     else:
                         logger.error(f"Failed to save image: {filename}")
-                
+
             return None
-            
+
+        except RuntimeError as e:
+            # X_LINK errors typically raise RuntimeError
+            error_msg = str(e).lower()
+            if ('x_link' in error_msg or 'xlink' in error_msg or
+                'x_link_error' in error_msg or 'connection' in error_msg or
+                'usb' in error_msg or 'device' in error_msg):
+                logger.error(f"X_LINK_ERROR in get_captured_image (USB disconnect): {e}")
+                self._mark_disconnected()
+                raise ConnectionError(f"Camera USB disconnected: {e}")
+            else:
+                logger.error(f"Runtime error getting captured image: {e}")
+                return None
         except Exception as e:
             logger.error(f"Error getting captured image: {e}")
             return None
@@ -480,10 +526,23 @@ class CameraController:
             # Add focus value text (moved down to make room for datestamp)
             focus_text = f"Focus: {self.config.get('focus', 'Unknown')}"
             cv2.putText(overlay, focus_text, (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            
+
+            # Add exposure value
+            exposure_ms = self.config.get('exposure_ms', 'Unknown')
+            if exposure_ms != 'Unknown':
+                exposure_text = f"Exposure: {exposure_ms:.1f}ms"
+            else:
+                exposure_text = f"Exposure: {exposure_ms}"
+            cv2.putText(overlay, exposure_text, (10, 85), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+            # Add ISO value
+            iso_value = self.config.get('iso_max', 'Unknown')
+            iso_text = f"ISO: {iso_value}"
+            cv2.putText(overlay, iso_text, (10, 115), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
             # Add hyperfocal distance suggestion
             # Hyperfocal and DOF text removed per user request
-            
+
             return overlay
             
         except Exception as e:
@@ -551,12 +610,13 @@ class CameraController:
         self._apply_auto_exposure_region()
 
     def _apply_auto_exposure_region(self):
-        """Apply stored auto exposure region to the device"""
+        """Apply stored auto exposure region to the device with X_LINK error handling"""
         if not self.ae_defined or not self.control_queue:
             return
 
         try:
             preview_res_map = {
+                'THE_1211x1013': (1211, 1013),
                 'THE_1250x1036': (1250, 1036),
                 'THE_1080_P': (1920, 1080),
                 'THE_720_P': (1280, 720),
@@ -567,7 +627,7 @@ class CameraController:
 
             frame_width, frame_height = preview_res_map.get(
                 self.preview_resolution,
-                (1250, 1036)
+                (1211, 1013)
             )
 
             ui_width = self.config.get('preview_width', 600)
@@ -593,6 +653,17 @@ class CameraController:
                 start_pt, end_pt, scaled_x, scaled_y, scaled_width, scaled_height
             )
 
+        except RuntimeError as e:
+            # X_LINK errors typically raise RuntimeError
+            error_msg = str(e).lower()
+            if ('x_link' in error_msg or 'xlink' in error_msg or
+                'x_link_error' in error_msg or 'connection' in error_msg or
+                'usb' in error_msg or 'device' in error_msg):
+                logger.error(f"X_LINK_ERROR in _apply_auto_exposure_region (USB disconnect): {e}")
+                self._mark_disconnected()
+                raise ConnectionError(f"Camera USB disconnected: {e}")
+            else:
+                logger.error(f"Runtime error applying auto exposure region: {e}")
         except Exception as e:
             logger.error(f"Error applying auto exposure region: {e}")
 
@@ -612,25 +683,35 @@ class CameraController:
             logger.error(f"Error during post-reconnect setup: {e}")
     
     def update_camera_setting(self, setting, value):
-        """Update camera setting"""
+        """Update camera setting with X_LINK error handling"""
         try:
             # Check if camera is connected
             if not self.control_queue:
                 logger.debug(f"Camera not connected yet, skipping {setting} update")
                 return
-                
+
             with self.control_lock:
                 current_time = time.time()
                 if current_time - self.last_control_time < self.control_delay:
                     return
                 self.last_control_time = current_time
-                
+
                 ctrl = dai.CameraControl()
-                
+
                 if setting == 'focus':
                     ctrl.setManualFocus(value)
                 elif setting == 'exposure':
-                    ctrl.setManualExposure(value * 1000, 800)
+                    # Use ISO from config (default to 800 if not set)
+                    iso = self.config.get('iso_max', 800)
+                    ctrl.setManualExposure(value * 1000, iso)
+                    # Update config so overlay shows correct value
+                    self.config['exposure_ms'] = value
+                elif setting == 'iso':
+                    # ISO is set as part of exposure, so update exposure with new ISO
+                    exposure_us = self.config.get('exposure_ms', 20) * 1000
+                    ctrl.setManualExposure(exposure_us, value)
+                    # Update config so overlay shows correct value
+                    self.config['iso_max'] = value
                 elif setting == 'white_balance':
                     ctrl.setManualWhiteBalance(value)
                 elif setting == 'sharpness':
@@ -645,11 +726,24 @@ class CameraController:
                     if value:
                         ctrl.setAutoExposureEnable()
                     else:
-                        ctrl.setManualExposure(self.config['exposure_ms'] * 1000, 800)
-                
+                        # Use ISO from config when disabling auto exposure
+                        iso = self.config.get('iso_max', 800)
+                        ctrl.setManualExposure(self.config['exposure_ms'] * 1000, iso)
+
                 self.control_queue.send(ctrl)
                 logger.info(f"Camera setting updated: {setting} = {value}")
-                
+
+        except RuntimeError as e:
+            # X_LINK errors typically raise RuntimeError
+            error_msg = str(e).lower()
+            if ('x_link' in error_msg or 'xlink' in error_msg or
+                'x_link_error' in error_msg or 'connection' in error_msg or
+                'usb' in error_msg or 'device' in error_msg):
+                logger.error(f"X_LINK_ERROR in update_camera_setting (USB disconnect): {e}")
+                self._mark_disconnected()
+                raise ConnectionError(f"Camera USB disconnected: {e}")
+            else:
+                logger.error(f"Runtime error updating camera setting {setting}: {e}")
         except Exception as e:
             logger.error(f"Error updating camera setting {setting}: {e}")
     

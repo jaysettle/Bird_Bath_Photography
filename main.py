@@ -295,6 +295,7 @@ class InteractivePreviewLabel(QLabel):
         """Update preview widget size based on camera resolution"""
         # Map resolution to appropriate display size
         resolution_display_map = {
+            'THE_1211x1013': (605, 506),   # Scale down by ~2x for display
             'THE_1250x1036': (625, 518),   # Scale down by 2x for display
             'THE_1080_P': (640, 360),       # Scale 1920x1080 to fit
             'THE_720_P': (640, 360),        # Scale 1280x720
@@ -304,7 +305,7 @@ class InteractivePreviewLabel(QLabel):
         }
 
         # Get display dimensions for this resolution
-        display_width, display_height = resolution_display_map.get(resolution, (600, 400))
+        display_width, display_height = resolution_display_map.get(resolution, (605, 506))
 
         # Update base dimensions
         self.base_width = display_width
@@ -491,9 +492,31 @@ class CameraThread(QThread):
         """Main camera loop with USB disconnect handling"""
         self.running = True
         was_connected = True
+        last_heartbeat = time.time()
+        heartbeat_interval = 30  # Log heartbeat every 30 seconds
+        last_successful_frame = time.time()
+        frame_timeout = 15  # Force reconnect if no frames processed for 15 seconds
+        consecutive_frame_failures = 0
+        max_frame_failures = 5  # Trigger reconnect after 5 consecutive frame failures
 
         while self.running:
             try:
+                # Heartbeat logging to detect thread freeze
+                current_time = time.time()
+                if current_time - last_heartbeat >= heartbeat_interval:
+                    logger.info(f"[HEARTBEAT] Camera thread alive - connected: {self.camera_controller.is_connected()}, errors: {self.connection_error_count}, frames_ok: {time.time() - last_successful_frame:.1f}s ago")
+                    last_heartbeat = current_time
+
+                # Detect stalled frame processing - GUI may have frozen
+                time_since_frame = current_time - last_successful_frame
+                if time_since_frame > frame_timeout and self.camera_controller.is_connected():
+                    logger.error(f"[FREEZE-DETECT] No frames processed for {time_since_frame:.1f}s - forcing camera reconnect to recover")
+                    # Force reconnection to unstick the system
+                    self.camera_controller.disconnect()
+                    was_connected = False
+                    consecutive_frame_failures = 0
+                    continue
+
                 # Check if camera is connected
                 if not self.camera_controller.is_connected():
                     if was_connected:
@@ -511,6 +534,8 @@ class CameraThread(QThread):
                             self.connection_restored.emit()
                             was_connected = True
                             self.connection_error_count = 0
+                            last_successful_frame = time.time()  # Reset frame timer
+                            consecutive_frame_failures = 0
                         else:
                             logger.warning(f"Reconnection failed, will retry in {self.reconnect_interval} seconds")
 
@@ -520,8 +545,12 @@ class CameraThread(QThread):
                 # Get frame
                 frame = self.camera_controller.get_frame()
                 if frame is not None:
+                    logger.debug(f"[FRAME] Got frame, shape: {frame.shape}, emitting to GUI")
                     self.frame_ready.emit(frame.copy())
+                    logger.debug(f"[FRAME] Frame emitted successfully")
                     self.connection_error_count = 0  # Reset error count on successful frame
+                    last_successful_frame = time.time()  # Update last successful frame time
+                    consecutive_frame_failures = 0  # Reset failure counter
 
                     # Process motion detection
                     if self.camera_controller.process_motion(frame):
@@ -531,6 +560,12 @@ class CameraThread(QThread):
                     # Normal frame rate when frames are available
                     self.msleep(33)  # ~30 FPS
                 else:
+                    # No frame available - could indicate problem
+                    consecutive_frame_failures += 1
+                    if consecutive_frame_failures >= max_frame_failures:
+                        logger.warning(f"[FREEZE-DETECT] {consecutive_frame_failures} consecutive frame failures - possible camera stall")
+                        # Don't force disconnect yet, just warn
+
                     # Longer delay when no frames available
                     self.msleep(200)  # 5 FPS polling rate
 
@@ -712,7 +747,7 @@ class CameraTab(QWidget):
 
         self.preview_label = InteractivePreviewLabel()
         # Set initial preview size based on camera resolution
-        camera_res = getattr(self.camera_controller, 'preview_resolution', 'THE_1080_P')
+        camera_res = getattr(self.camera_controller, 'preview_resolution', 'THE_1211x1013')
         self.preview_label.set_preview_resolution(camera_res)
         self.preview_label.roi_selected.connect(self.on_roi_selected)
         self.preview_label.focus_point_clicked.connect(self.on_focus_point_clicked)
@@ -759,11 +794,12 @@ class CameraTab(QWidget):
         # Exposure slider
         camera_layout.addWidget(QLabel("Exposure:"), 1, 0)
         self.exposure_slider = QSlider(Qt.Orientation.Horizontal)
-        self.exposure_slider.setRange(1, 33)
+        # Range: 5-100 (represents 0.5ms to 10ms in 0.1ms increments)
+        self.exposure_slider.setRange(5, 100)
         self.exposure_slider.setValue(20)
         self.exposure_slider.valueChanged.connect(self.on_exposure_changed)
         camera_layout.addWidget(self.exposure_slider, 1, 1)
-        self.exposure_value = QLabel("20ms")
+        self.exposure_value = QLabel("2.0ms")
         camera_layout.addWidget(self.exposure_value, 1, 2)
         
         # Auto exposure checkbox
@@ -850,6 +886,7 @@ class CameraTab(QWidget):
         camera_layout.addWidget(QLabel("Preview:"), 8, 0)
         self.preview_resolution_combo = QComboBox()
         preview_resolutions = [
+            ("THE_1211x1013", "1211x1013"),
             ("THE_1250x1036", "1250x1036"),
             ("THE_1080_P", "1080p"),
             ("THE_720_P", "720p"),
@@ -860,7 +897,7 @@ class CameraTab(QWidget):
         for res_key, res_name in preview_resolutions:
             self.preview_resolution_combo.addItem(res_name, res_key)
 
-        # Set default preview resolution (1250x1036)
+        # Set default preview resolution (1211x1013)
         self.preview_resolution_combo.setCurrentIndex(0)
         # No immediate change handler - will apply on Save
         camera_layout.addWidget(self.preview_resolution_combo, 8, 1, 1, 2)
@@ -894,26 +931,7 @@ class CameraTab(QWidget):
         sensitivity_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
         motion_layout.addWidget(sensitivity_hint, 1, 1)
         
-        
-        # ROI buttons
-        roi_layout = QHBoxLayout()
-        self.set_roi_btn = QPushButton("Drag on Preview")
-        self.set_roi_btn.clicked.connect(self.on_set_roi)
-        roi_layout.addWidget(self.set_roi_btn)
-        
-        self.clear_roi_btn = QPushButton("Clear ROI")
-        self.clear_roi_btn.clicked.connect(self.on_clear_roi)
-        roi_layout.addWidget(self.clear_roi_btn)
-        
-        # Add reset zoom button
-        self.reset_zoom_btn = QPushButton("Reset Zoom")
-        self.reset_zoom_btn.setToolTip("Reset camera preview zoom to 1.0x\n(Use mouse wheel on preview to zoom)")
-        self.reset_zoom_btn.clicked.connect(self.on_reset_zoom)
-        roi_layout.addWidget(self.reset_zoom_btn)
-        
-        motion_layout.addLayout(roi_layout, 3, 0, 1, 3)
-        
-        
+
         motion_group.setLayout(motion_layout)
         left_layout.addWidget(motion_group)
         
@@ -1045,29 +1063,77 @@ class CameraTab(QWidget):
     
     def update_frame(self, frame):
         """Update the camera preview with new frame"""
-        self.current_frame = frame.copy()
-        
-        # Convert to Qt format
-        height, width, channel = frame.shape
-        bytes_per_line = 3 * width
-        q_image = QImage(frame.data, width, height, bytes_per_line, QImage.Format.Format_RGB888).rgbSwapped()
-        
-        # Scale to fit preview
-        pixmap = QPixmap.fromImage(q_image)
-        scaled_pixmap = pixmap.scaled(
-            self.preview_label.size(), 
-            Qt.AspectRatioMode.KeepAspectRatio, 
-            Qt.TransformationMode.SmoothTransformation
-        )
-        
-        self.preview_label.setPixmap(scaled_pixmap)
-        
-        # Update FPS in stats (approximate)
-        if hasattr(self, 'sensor_fps_label'):
-            sensor_res = getattr(self, 'sensor_resolution_label', QLabel()).text()
-            if sensor_res == "Unknown":
-                sensor_res = "4056x3040"
-            self.sensor_fps_label.setText(f"Sensor: {sensor_res} | FPS: ~30")
+        try:
+            # Freeze detection: Track when update_frame is called
+            if not hasattr(self, 'last_frame_update_time'):
+                self.last_frame_update_time = time.time()
+                self.frame_update_count = 0
+                logger.info("[FREEZE-CHECK] First frame update - initializing tracking")
+
+            current_time = time.time()
+            time_since_last = current_time - self.last_frame_update_time
+
+            # Log if there's a suspicious gap (> 5 seconds between frames)
+            if time_since_last > 5.0:
+                logger.warning(f"[FREEZE-CHECK] Long gap detected: {time_since_last:.1f}s since last frame update")
+
+            self.frame_update_count += 1
+
+            # Log every 100 frames to confirm updates are happening
+            if self.frame_update_count % 100 == 0:
+                logger.debug(f"[FREEZE-CHECK] Frame update #{self.frame_update_count}, gap: {time_since_last:.3f}s")
+
+            self.last_frame_update_time = current_time
+
+            if frame is None or frame.size == 0:
+                logger.warning("Received invalid frame in update_frame")
+                return
+
+            self.current_frame = frame.copy()
+
+            # Convert to Qt format
+            height, width, channel = frame.shape
+
+            # Validate frame dimensions
+            if height == 0 or width == 0 or channel != 3:
+                logger.error(f"[FREEZE-CHECK] Invalid frame dimensions: {height}x{width}x{channel}")
+                return
+
+            bytes_per_line = 3 * width
+            logger.debug(f"[FREEZE-CHECK] Creating QImage: {width}x{height}, bpl: {bytes_per_line}")
+            q_image = QImage(frame.data, width, height, bytes_per_line, QImage.Format.Format_RGB888).rgbSwapped()
+
+            if q_image.isNull():
+                logger.error("[FREEZE-CHECK] Failed to create QImage from frame data - THIS CAUSES GUI FREEZE")
+                return
+
+            logger.debug(f"[FREEZE-CHECK] QImage created successfully, converting to pixmap")
+            # Scale to fit preview
+            pixmap = QPixmap.fromImage(q_image)
+            if pixmap.isNull():
+                logger.error("[FREEZE-CHECK] Failed to create QPixmap from QImage - THIS CAUSES GUI FREEZE")
+                return
+
+            logger.debug(f"[FREEZE-CHECK] Pixmap created, scaling to preview size: {self.preview_label.size()}")
+            scaled_pixmap = pixmap.scaled(
+                self.preview_label.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            )
+
+            logger.debug(f"[FREEZE-CHECK] Setting pixmap on label")
+            self.preview_label.setPixmap(scaled_pixmap)
+            logger.debug(f"[FREEZE-CHECK] Frame display update complete")
+
+            # Update FPS in stats (approximate)
+            if hasattr(self, 'sensor_fps_label'):
+                sensor_res = getattr(self, 'sensor_resolution_label', QLabel()).text()
+                if sensor_res == "Unknown":
+                    sensor_res = "4056x3040"
+                self.sensor_fps_label.setText(f"Sensor: {sensor_res} | FPS: ~30")
+
+        except Exception as e:
+            logger.error(f"Error updating frame display: {e}", exc_info=True)
     
     def update_camera_stats(self):
         """Update camera statistics display"""
@@ -1143,9 +1209,11 @@ class CameraTab(QWidget):
     
     def on_exposure_changed(self, value):
         """Handle exposure slider change"""
-        self.exposure_value.setText(f"{value}ms")
+        # Slider value is in 0.1ms units (5-100 = 0.5-10ms)
+        exposure_ms = value / 10.0
+        self.exposure_value.setText(f"{exposure_ms:.1f}ms")
         if not self.auto_exposure_cb.isChecked():
-            self.camera_controller.update_camera_setting('exposure', value)
+            self.camera_controller.update_camera_setting('exposure', exposure_ms)
     
     def on_auto_exposure_changed(self, state):
         """Handle auto exposure checkbox change"""
@@ -1169,120 +1237,188 @@ class CameraTab(QWidget):
         # Ensure max >= min
         if value > self.iso_max_slider.value():
             self.iso_max_slider.setValue(value)
-    
+        # Apply ISO setting to camera
+        main_window = self.window()
+        if hasattr(main_window, 'camera_controller'):
+            main_window.camera_controller.update_camera_setting('iso', value)
+
     def on_iso_max_changed(self, value):
         """Handle ISO max slider change"""
         self.iso_max_value.setText(str(value))
         # Ensure max >= min
         if value < self.iso_min_slider.value():
             self.iso_min_slider.setValue(value)
+        # Apply ISO setting to camera
+        main_window = self.window()
+        if hasattr(main_window, 'camera_controller'):
+            main_window.camera_controller.update_camera_setting('iso', value)
 
     # Preview resolution change is now handled in on_save_settings() instead
 
     def on_resolution_changed(self, index):
         """Handle resolution dropdown change"""
+        logger.info(f"=== on_resolution_changed CALLED with index={index} ===")
         resolution_key = self.resolution_combo.itemData(index)
         resolution_name = self.resolution_combo.itemText(index)
-        
+        logger.info(f"Resolution key: {resolution_key}, name: {resolution_name}")
+
         # Map DepthAI resolution keys to config values - only supported resolutions
         key_to_config = {
             'THE_4_K': '4k',
-            'THE_12_MP': '12mp', 
+            'THE_12_MP': '12mp',
             'THE_13_MP': '13mp',
             'THE_1080_P': '1080p',
             'THE_720_P': '720p',
             'THE_5_MP': '5mp'
         }
-        
+
         config_value = key_to_config.get(resolution_key, '4k')
-        
-        # Show warning that camera will restart
-        reply = QMessageBox.question(
-            self, 
-            "Change Resolution",
-            f"Changing resolution to {resolution_name} will restart the camera.\n\nContinue?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        )
-        
-        if reply == QMessageBox.StandardButton.Yes:
-            logger.info(f"Changing camera resolution to {resolution_name}")
-            
-            # Update config
-            self.config['camera']['resolution'] = config_value
-            
-            # Save config to file
-            try:
-                import json
-                config_path = os.path.join(os.path.dirname(__file__), 'config.json')
-                with open(config_path, 'w') as f:
-                    json.dump(self.config, f, indent=2)
-                logger.info(f"Config updated with new resolution: {config_value}")
-            except Exception as e:
-                logger.error(f"Failed to save config: {e}")
-            
-            # Get main window reference using window() method
-            main_window = self.window()
-            
-            try:
-                # Step 1: Stop and cleanup existing camera thread
-                if hasattr(main_window, 'camera_thread') and main_window.camera_thread:
-                    logger.info("Stopping existing camera thread...")
-                    # Disconnect all signals first
-                    try:
-                        main_window.camera_thread.frame_ready.disconnect()
-                        main_window.camera_thread.image_captured.disconnect()
-                    except:
-                        pass  # Signals may not be connected
-                    
-                    main_window.camera_thread.stop()
-                    if not main_window.camera_thread.wait(3000):  # Wait up to 3 seconds
-                        logger.warning("Camera thread did not stop gracefully")
-                    main_window.camera_thread = None
-                
-                # Step 2: Disconnect camera controller
-                if hasattr(self.camera_controller, 'device') and self.camera_controller.device:
-                    logger.info("Disconnecting camera controller...")
-                    self.camera_controller.disconnect()
-                
-                # Step 3: Update camera controller config
-                self.camera_controller.config['resolution'] = config_value
-                logger.info(f"Camera controller config updated to: {config_value}")
-                
-                # Step 4: Reconnect and setup new pipeline
-                if self.camera_controller.connect() and self.camera_controller.setup_pipeline():
-                    logger.info("Camera reconnected with new resolution")
-                    
-                    # Step 5: Create and start new camera thread
-                    main_window.camera_thread = CameraThread(self.camera_controller)
-                    main_window.camera_thread.frame_ready.connect(self.update_frame)
-                    main_window.camera_thread.image_captured.connect(main_window.on_image_captured)
-                    main_window.camera_thread.start()
-                    
-                    logger.info(f"Camera successfully restarted with resolution: {resolution_name}")
-                else:
-                    raise Exception("Failed to setup camera pipeline with new resolution")
-                    
-            except Exception as e:
-                logger.error(f"Failed to restart camera with new resolution: {e}")
-                QMessageBox.warning(self, "Camera Error", 
-                                  f"Failed to restart camera with {resolution_name}.\nError: {str(e)}")
-                
-                # Revert dropdown to previous selection
-                current_res = self.config.get('camera', {}).get('resolution', '4k')
-                res_map = {
-                    '4k': 'THE_4_K',
-                    '12mp': 'THE_12_MP',
-                    '13mp': 'THE_13_MP',
-                    '1080p': 'THE_1080_P',
-                    '720p': 'THE_720_P',
-                    '5mp': 'THE_5_MP'
+        logger.info(f"Config value: {config_value}, showing confirmation...")
+
+        # Show in-UI confirmation (QMessageBox doesn't work properly)
+        self.show_resolution_confirmation(resolution_name, config_value, resolution_key)
+
+    def show_resolution_confirmation(self, resolution_name, config_value, resolution_key):
+        """Show in-UI confirmation for resolution change"""
+        # Store the pending change
+        self.pending_resolution_change = {
+            'name': resolution_name,
+            'config_value': config_value,
+            'resolution_key': resolution_key
+        }
+
+        # Create confirmation widget if it doesn't exist
+        if not hasattr(self, 'confirmation_widget'):
+            self.confirmation_widget = QWidget()
+            conf_layout = QVBoxLayout(self.confirmation_widget)
+            conf_layout.setContentsMargins(10, 10, 10, 10)
+
+            self.confirmation_label = QLabel()
+            self.confirmation_label.setWordWrap(True)
+            self.confirmation_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            conf_layout.addWidget(self.confirmation_label)
+
+            button_layout = QHBoxLayout()
+            button_layout.addStretch()
+
+            yes_btn = QPushButton("Yes, Change Resolution")
+            yes_btn.clicked.connect(self.on_resolution_confirmed)
+            yes_btn.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; padding: 8px; font-weight: bold; }")
+            button_layout.addWidget(yes_btn)
+
+            no_btn = QPushButton("Cancel")
+            no_btn.clicked.connect(self.on_resolution_cancelled)
+            no_btn.setStyleSheet("QPushButton { background-color: #f44336; color: white; padding: 8px; font-weight: bold; }")
+            button_layout.addWidget(no_btn)
+
+            button_layout.addStretch()
+            conf_layout.addLayout(button_layout)
+
+            self.confirmation_widget.setStyleSheet("""
+                QWidget {
+                    background-color: #FFF3CD;
+                    border: 2px solid #FFC107;
+                    border-radius: 5px;
                 }
-                for i in range(self.resolution_combo.count()):
-                    if self.resolution_combo.itemData(i) == res_map.get(current_res, 'THE_4_K'):
-                        self.resolution_combo.setCurrentIndex(i)
-                        break
-        else:
-            # Revert dropdown selection
+                QLabel {
+                    font-size: 13px;
+                    font-weight: bold;
+                    color: #856404;
+                }
+            """)
+            self.confirmation_widget.hide()
+
+            # Insert at the top of the main layout
+            main_layout = self.layout()
+            if main_layout:
+                main_layout.insertWidget(0, self.confirmation_widget)
+
+        # Update message
+        self.confirmation_label.setText(
+            f"⚠️ Change capture resolution to {resolution_name}?\n\n"
+            f"This will restart the camera and may take a few seconds."
+        )
+        self.confirmation_widget.show()
+        logger.info(f"Showing resolution confirmation for {resolution_name}")
+
+    def on_resolution_confirmed(self):
+        """User confirmed resolution change"""
+        self.confirmation_widget.hide()
+
+        if not hasattr(self, 'pending_resolution_change'):
+            return
+
+        resolution_name = self.pending_resolution_change['name']
+        config_value = self.pending_resolution_change['config_value']
+
+        logger.info(f"Changing camera resolution to {resolution_name}")
+
+        # Update config
+        self.config['camera']['resolution'] = config_value
+
+        # Save config to file
+        try:
+            import json
+            config_path = os.path.join(os.path.dirname(__file__), 'config.json')
+            with open(config_path, 'w') as f:
+                json.dump(self.config, f, indent=2)
+            logger.info(f"Config updated with new resolution: {config_value}")
+        except Exception as e:
+            logger.error(f"Failed to save config: {e}")
+
+        # Get main window reference using window() method
+        main_window = self.window()
+
+        try:
+            # Step 1: Stop and cleanup existing camera thread
+            if hasattr(main_window, 'camera_thread') and main_window.camera_thread:
+                logger.info("Stopping existing camera thread...")
+                # Disconnect all signals first
+                try:
+                    main_window.camera_thread.frame_ready.disconnect()
+                    main_window.camera_thread.image_captured.disconnect()
+                except:
+                    pass  # Signals may not be connected
+
+                main_window.camera_thread.stop()
+                if not main_window.camera_thread.wait(3000):  # Wait up to 3 seconds
+                    logger.warning("Camera thread did not stop gracefully")
+                main_window.camera_thread = None
+
+            # Step 2: Disconnect camera controller
+            if hasattr(self.camera_controller, 'device') and self.camera_controller.device:
+                logger.info("Disconnecting camera controller...")
+                self.camera_controller.disconnect()
+
+            # Step 3: Update camera controller config
+            self.camera_controller.config['resolution'] = config_value
+            logger.info(f"Camera controller config updated to: {config_value}")
+
+            # Step 4: Reconnect and setup new pipeline
+            if self.camera_controller.connect() and self.camera_controller.setup_pipeline():
+                logger.info("Camera reconnected with new resolution")
+
+                # Step 5: Create and start new camera thread
+                main_window.camera_thread = CameraThread(self.camera_controller)
+                main_window.camera_thread.frame_ready.connect(self.update_frame)
+                main_window.camera_thread.image_captured.connect(main_window.on_image_captured)
+                main_window.camera_thread.start()
+
+                logger.info(f"Camera successfully restarted with resolution: {resolution_name}")
+
+                # Show success notification
+                self.show_save_notification(
+                    f"✅ Capture resolution changed to {resolution_name}\n\nCamera restarted successfully.",
+                    1, False
+                )
+            else:
+                raise Exception("Failed to setup camera pipeline with new resolution")
+
+        except Exception as e:
+            logger.error(f"Failed to restart camera with new resolution: {e}")
+            self.show_save_notification(f"❌ Failed to change resolution: {str(e)}", 0, False)
+
+            # Revert dropdown to previous selection
             current_res = self.config.get('camera', {}).get('resolution', '4k')
             res_map = {
                 '4k': 'THE_4_K',
@@ -1296,6 +1432,28 @@ class CameraTab(QWidget):
                 if self.resolution_combo.itemData(i) == res_map.get(current_res, 'THE_4_K'):
                     self.resolution_combo.setCurrentIndex(i)
                     break
+
+    def on_resolution_cancelled(self):
+        """User cancelled resolution change"""
+        self.confirmation_widget.hide()
+        logger.info("Resolution change cancelled")
+
+        # Revert dropdown selection to current config value
+        current_res = self.config.get('camera', {}).get('resolution', '4k')
+        res_map = {
+            '4k': 'THE_4_K',
+            '12mp': 'THE_12_MP',
+            '13mp': 'THE_13_MP',
+            '1080p': 'THE_1080_P',
+            '720p': 'THE_720_P',
+            '5mp': 'THE_5_MP'
+        }
+        for i in range(self.resolution_combo.count()):
+            if self.resolution_combo.itemData(i) == res_map.get(current_res, 'THE_4_K'):
+                self.resolution_combo.blockSignals(True)
+                self.resolution_combo.setCurrentIndex(i)
+                self.resolution_combo.blockSignals(False)
+                break
     
     def on_sensitivity_changed(self, value):
         """Handle sensitivity slider change"""
@@ -1321,6 +1479,7 @@ class CameraTab(QWidget):
         else:
             # Get current camera preview resolution
             preview_res_map = {
+                'THE_1211x1013': (1211, 1013),
                 'THE_1250x1036': (1250, 1036),
                 'THE_1080_P': (1920, 1080),
                 'THE_720_P': (1280, 720),
@@ -1330,8 +1489,8 @@ class CameraTab(QWidget):
             }
 
             # Get camera resolution
-            camera_res = getattr(self.camera_controller, 'preview_resolution', 'THE_1080_P')
-            camera_width, camera_height = preview_res_map.get(camera_res, (1920, 1080))
+            camera_res = getattr(self.camera_controller, 'preview_resolution', 'THE_1211x1013')
+            camera_width, camera_height = preview_res_map.get(camera_res, (1211, 1013))
 
             # Get display widget size
             display_width = self.preview_label.width()
@@ -1488,7 +1647,8 @@ class CameraTab(QWidget):
 
                 # Scale ROI coordinates from display to camera resolution
                 preview_res_map = {
-                    'THE_1250x1036': (1250, 1036),
+                    'THE_1211x1013': (1211, 1013),
+                'THE_1250x1036': (1250, 1036),
                     'THE_1080_P': (1920, 1080),
                     'THE_720_P': (1280, 720),
                     'THE_480_P': (640, 480),
@@ -1497,8 +1657,8 @@ class CameraTab(QWidget):
                 }
 
                 # Get camera resolution
-                camera_res = getattr(self.camera_controller, 'preview_resolution', 'THE_1080_P')
-                camera_width, camera_height = preview_res_map.get(camera_res, (1920, 1080))
+                camera_res = getattr(self.camera_controller, 'preview_resolution', 'THE_1211x1013')
+                camera_width, camera_height = preview_res_map.get(camera_res, (1211, 1013))
 
                 # Get display widget size
                 display_width = self.preview_label.width()
@@ -1542,7 +1702,9 @@ class CameraTab(QWidget):
             # Load camera settings
             camera_config = self.config.get('camera', {})
             self.focus_slider.setValue(camera_config.get('focus', 128))
-            self.exposure_slider.setValue(camera_config.get('exposure_ms', 20))
+            # Convert exposure from ms to slider units (0.1ms increments)
+            exposure_ms = camera_config.get('exposure_ms', 2.0)
+            self.exposure_slider.setValue(int(exposure_ms * 10))
             self.wb_slider.setValue(camera_config.get('white_balance', 6637))
             self.brightness_slider.setValue(camera_config.get('brightness', 0))
             self.brightness_value.setText(str(self.brightness_slider.value()))
@@ -1550,7 +1712,7 @@ class CameraTab(QWidget):
             self.iso_max_slider.setValue(camera_config.get('iso_max', 800))
 
             # Load preview resolution from config
-            saved_preview_res = camera_config.get('preview_resolution', 'THE_1250x1036')
+            saved_preview_res = camera_config.get('preview_resolution', 'THE_1211x1013')
             logger.info(f"Loading saved preview resolution: {saved_preview_res}")
 
             # Set the combo box to the saved value
@@ -1578,12 +1740,22 @@ class CameraTab(QWidget):
     def test_dialog(self):
         """Test if dialogs work at all"""
         logger.info("Testing dialog display...")
-        result = QMessageBox.information(
-            self,
-            "Test Dialog",
-            "This is a test dialog.\n\nIf you can see this, dialogs are working!",
-            QMessageBox.StandardButton.Ok
-        )
+        # Use main window as parent to ensure dialog appears on top
+        main_window = self.window()
+
+        # Force dialog to be visible with explicit flags
+        msg = QMessageBox(main_window)
+        msg.setIcon(QMessageBox.Icon.Information)
+        msg.setText("This is a test dialog.")
+        msg.setInformativeText("If you can see this, dialogs are working!")
+        msg.setWindowTitle("Test Dialog")
+        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+        msg.setWindowModality(Qt.WindowModality.ApplicationModal)
+        msg.raise_()
+        msg.activateWindow()
+
+        logger.info("About to exec test dialog...")
+        result = msg.exec()
         logger.info(f"Test dialog closed with result: {result}")
 
     def on_save_settings(self):
@@ -1598,10 +1770,11 @@ class CameraTab(QWidget):
             if old_focus != new_focus:
                 changes.append(f"• Focus: {old_focus} → {new_focus}")
             
-            old_exposure = self.config['camera'].get('exposure_ms', 20)
-            new_exposure = self.exposure_slider.value()
+            old_exposure = self.config['camera'].get('exposure_ms', 2.0)
+            # Convert slider value (0.1ms units) to milliseconds
+            new_exposure = self.exposure_slider.value() / 10.0
             if old_exposure != new_exposure:
-                changes.append(f"• Exposure: {old_exposure}ms → {new_exposure}ms")
+                changes.append(f"• Exposure: {old_exposure:.1f}ms → {new_exposure:.1f}ms")
             
             old_wb = self.config['camera'].get('white_balance', 6637)
             new_wb = self.wb_slider.value()
@@ -1631,13 +1804,13 @@ class CameraTab(QWidget):
 
             # Check preview resolution changes
             new_preview_res = self.preview_resolution_combo.itemData(self.preview_resolution_combo.currentIndex())
-            old_preview_res = getattr(self.camera_controller, 'preview_resolution', 'THE_1250x1036')
+            old_preview_res = getattr(self.camera_controller, 'preview_resolution', 'THE_1211x1013')
             preview_changed = False
 
             logger.info(f"Preview resolution check - Old: {old_preview_res}, New: {new_preview_res}")
 
             if old_preview_res != new_preview_res:
-                old_name = {'THE_1250x1036': '1250x1036', 'THE_1080_P': '1080p', 'THE_720_P': '720p', 'THE_480_P': '480p', 'THE_400_P': '400p', 'THE_300_P': '300p'}.get(old_preview_res, '1250x1036')
+                old_name = {'THE_1211x1013': '1211x1013', 'THE_1250x1036': '1250x1036', 'THE_1080_P': '1080p', 'THE_720_P': '720p', 'THE_480_P': '480p', 'THE_400_P': '400p', 'THE_300_P': '300p'}.get(old_preview_res, '1211x1013')
                 new_name = self.preview_resolution_combo.currentText()
                 changes.append(f"• Preview Resolution: {old_name} → {new_name}")
                 preview_changed = True
@@ -1716,15 +1889,16 @@ class CameraTab(QWidget):
 
                     # Get old and new preview dimensions for ROI scaling
                     old_preview_res_map = {
-                        'THE_1250x1036': (1250, 1036),
+                        'THE_1211x1013': (1211, 1013),
+                'THE_1250x1036': (1250, 1036),
                         'THE_1080_P': (1920, 1080),
                         'THE_720_P': (1280, 720),
                         'THE_480_P': (640, 480),
                         'THE_400_P': (640, 400),
                         'THE_300_P': (640, 300)
                     }
-                    old_width, old_height = old_preview_res_map.get(old_preview_res, (1250, 1036))
-                    new_width, new_height = old_preview_res_map.get(new_preview_res, (1250, 1036))
+                    old_width, old_height = old_preview_res_map.get(old_preview_res, (1211, 1013))
+                    new_width, new_height = old_preview_res_map.get(new_preview_res, (1211, 1013))
 
                     logger.info(f"ROI scaling: {old_width}x{old_height} -> {new_width}x{new_height}")
 
@@ -1744,6 +1918,18 @@ class CameraTab(QWidget):
                         # Get current display dimensions for scaling calculation
                         old_display_width = self.preview_label.width()
                         old_display_height = self.preview_label.height()
+
+                        # Get new display dimensions from resolution map
+                        resolution_display_map = {
+                            'THE_1211x1013': (605, 506),
+                        'THE_1250x1036': (625, 518),
+                            'THE_1080_P': (600, 338),
+                            'THE_720_P': (640, 360),
+                            'THE_480_P': (640, 480),
+                            'THE_400_P': (640, 400),
+                            'THE_300_P': (640, 300)
+                        }
+                        display_width, display_height = resolution_display_map.get(new_preview_res, (625, 518))
 
                         # Calculate ROI scaling factors for the display
                         display_scale_x = display_width / old_display_width
@@ -1960,52 +2146,50 @@ class ImageViewerDialog(QDialog):
         
         self.setWindowTitle(Path(current_image_path).name)
         self.setModal(True)
-        
-        # Start maximized for better image viewing
-        self.showMaximized()
-        
+
         # Main layout
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 10, 10, 10)
-        
+
         # Image label - make it expand to fill available space
         self.image_label = QLabel()
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.image_label.setMinimumSize(600, 400)
+        self.image_label.setMinimumSize(1200, 800)  # Doubled from 600x400
         self.image_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         layout.addWidget(self.image_label, 1)  # Give it stretch factor of 1
-        
+
         # Navigation info
         self.nav_label = QLabel()
         self.nav_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.nav_label.setStyleSheet("color: #888; padding: 5px;")
         layout.addWidget(self.nav_label)
-        
+
         # Button layout
         button_layout = QHBoxLayout()
-        
+
         # Previous button
         self.prev_btn = QPushButton("← Previous")
         self.prev_btn.clicked.connect(self.show_previous)
         button_layout.addWidget(self.prev_btn)
-        
+
         # Close button
         close_btn = QPushButton("Close (Esc)")
         close_btn.clicked.connect(self.close)
         button_layout.addWidget(close_btn)
-        
+
         # Next button
         self.next_btn = QPushButton("Next →")
         self.next_btn.clicked.connect(self.show_next)
         button_layout.addWidget(self.next_btn)
-        
+
         layout.addLayout(button_layout)
-        
+
         # Load initial image
         self.load_current_image()
-        
-        # Set minimum size
-        self.setMinimumSize(800, 600)
+
+        # Set window size to be twice as large (1600x1200 instead of 800x600)
+        self.resize(1600, 1200)
+        self.setMinimumSize(1600, 1200)
         
         # Store original pixmap for resizing
         self.original_pixmap = None
@@ -2032,26 +2216,26 @@ class ImageViewerDialog(QDialog):
         """Scale and display the current image to fit available space"""
         if not self.original_pixmap:
             return
-            
+
         try:
             # Get available space, accounting for margins and buttons
             available_size = self.image_label.size()
-            
+
             # Account for margins - leave some padding
             max_width = max(available_size.width() - 40, 600)
             max_height = max(available_size.height() - 40, 400)
-            
+
             # Scale image to fit available space while preserving aspect ratio
-            if (self.original_pixmap.width() > max_width or 
+            if (self.original_pixmap.width() > max_width or
                 self.original_pixmap.height() > max_height):
                 scaled_pixmap = self.original_pixmap.scaled(
-                    max_width, max_height, 
+                    max_width, max_height,
                     Qt.AspectRatioMode.KeepAspectRatio,
                     Qt.TransformationMode.SmoothTransformation)
             else:
                 # Show at original size if it fits
                 scaled_pixmap = self.original_pixmap
-            
+
             self.image_label.setPixmap(scaled_pixmap)
             
         except Exception as e:
@@ -2188,7 +2372,7 @@ class GalleryTab(QWidget):
         self.today_date = datetime.now().strftime('%Y-%m-%d')
         self.current_focus_index = -1  # Track currently focused item for arrow navigation
         self.initial_batch_size = 30  # Images to load for the newest day
-        self.scroll_batch_size = 20   # Images to load per scroll batch
+        self.scroll_batch_size = 60   # Images to load per scroll batch
         self.scroll_trigger_percent = 80  # Threshold percentage to trigger lazy load
         self.setup_ui()
         
@@ -2860,13 +3044,13 @@ class GalleryTab(QWidget):
                             limit=self.scroll_batch_size,
                             offset=offset
                         )
-                        self.is_loading_more = False
+
                         # Update status to show completion
                         total_images = sum(len(images) for images in self.images_by_date.values())
                         self.set_status_message(f"Loaded {total_images} images from {len(self.images_by_date)} days")
-                        
-                        # After loading, check scroll position again
-                        QTimer.singleShot(100, self.check_scroll_position)
+
+                        # Reset loading flag AFTER status update
+                        self.is_loading_more = False
                         return
             
             # If no existing dates have more, load from a new date
@@ -2899,13 +3083,13 @@ class GalleryTab(QWidget):
                         offset=0
                     )
                     self.loaded_dates.add(date_str)
-                    self.is_loading_more = False
+
                     # Update status to show completion
                     total_images = sum(len(images) for images in self.images_by_date.values())
                     self.set_status_message(f"Loaded {total_images} images from {len(self.images_by_date)} days")
-                    
-                    # After loading, check scroll position again
-                    QTimer.singleShot(100, self.check_scroll_position)
+
+                    # Reset loading flag AFTER status update
+                    self.is_loading_more = False
                     return
             
             # No more dates to load
@@ -2921,6 +3105,10 @@ class GalleryTab(QWidget):
     def check_scroll_position(self):
         """Check if we need to load more images based on scroll position"""
         try:
+            # Don't check if already loading
+            if hasattr(self, 'is_loading_more') and self.is_loading_more:
+                return
+
             scrollbar = self.scroll_area.verticalScrollBar()
             if scrollbar.maximum() > 0:
                 scroll_percentage = (scrollbar.value() / scrollbar.maximum()) * 100
@@ -3797,30 +3985,44 @@ class ServicesTab(QWidget):
             logger.error(f"Error opening Drive folder: {e}")
     
     def on_test_email(self):
-        """Send test email"""
+        """Send test email using current configuration"""
         try:
-            # First save the current configuration to ensure latest email credentials are used
-            self.save_config()
+            # Get current email config from the main config
+            email_config = self.config.get('email', {})
 
-            # Get the email handler from main window (which was just updated in save_config)
-            main_window = self.window()
-            if hasattr(main_window, 'email_handler') and main_window.email_handler:
-                test_info = {
-                    'hostname': 'test-system',
-                    'ip_address': '127.0.0.1',
-                    'uptime': '5 minutes'
-                }
-                result = main_window.email_handler.send_reboot_notification(test_info)
-                if result:
-                    QMessageBox.information(self, "Test Email", "Test email sent successfully!")
-                else:
-                    QMessageBox.warning(self, "Test Email", "Failed to send test email. Check logs for details.")
-                logger.info("Test email sent")
+            # Validate email settings
+            if not email_config.get('sender'):
+                QMessageBox.warning(self, "Email Not Configured",
+                                  "Please configure email settings in the Configuration tab first.")
+                return
+            if not email_config.get('password'):
+                QMessageBox.warning(self, "Email Not Configured",
+                                  "Please configure email password in the Configuration tab first.")
+                return
+
+            # Create temporary email handler with current config
+            temp_handler = EmailHandler(self.config)
+
+            # Send test email
+            test_info = {
+                'hostname': 'test-system',
+                'ip_address': '127.0.0.1',
+                'uptime': '5 minutes'
+            }
+            result = temp_handler.send_reboot_notification(test_info)
+            if result:
+                QMessageBox.information(self, "Test Email", "Test email sent successfully!")
             else:
-                QMessageBox.warning(self, "Test Email", "Email handler not initialized")
+                QMessageBox.warning(self, "Test Email",
+                                  "Failed to send test email. Check logs for details.\n\n"
+                                  "Common issues:\n"
+                                  "- Incorrect app password\n"
+                                  "- 2-factor authentication not enabled\n"
+                                  "- Configure email in Configuration tab")
+            logger.info("Test email sent from Services tab")
         except Exception as e:
-            logger.error(f"Error sending test email: {e}")
-            QMessageBox.critical(self, "Error", f"Failed to send test email: {str(e)}")
+            logger.error(f"Error sending test email: {e}", exc_info=True)
+            QMessageBox.critical(self, "Error", f"Failed to send test email:\n\n{str(e)}")
     
     def update_service_statuses(self):
         """Update all service status displays"""
@@ -4066,11 +4268,28 @@ class ConfigTab(QWidget):
         self.openai_limit.setValue(10)
         group_layout.addWidget(self.openai_limit, 2, 1)
         
+        # Test API button
+        self.test_api_btn = QPushButton("Test API Connection")
+        self.test_api_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #2196F3;
+                color: white;
+                border: none;
+                padding: 5px;
+                border-radius: 3px;
+            }
+            QPushButton:hover {
+                background-color: #0b7dda;
+            }
+        """)
+        self.test_api_btn.clicked.connect(self.test_openai_api)
+        group_layout.addWidget(self.test_api_btn, 3, 0, 1, 3)
+
         # Clear species button
         clear_species_btn = QPushButton("Clear Species Database")
         clear_species_btn.clicked.connect(self.clear_species_database)
-        group_layout.addWidget(clear_species_btn, 3, 0, 1, 3)
-        
+        group_layout.addWidget(clear_species_btn, 4, 0, 1, 3)
+
         group.setLayout(group_layout)
         layout.addWidget(group)
     
@@ -4218,12 +4437,225 @@ class ConfigTab(QWidget):
         except Exception as e:
             logger.error(f"Failed to open OpenAI API page: {e}")
             QMessageBox.information(
-                self, 
-                "OpenAI API Keys", 
+                self,
+                "OpenAI API Keys",
                 "Please visit: https://platform.openai.com/api-keys\n\n"
                 "Create an account and generate an API key to enable bird identification."
             )
-    
+
+    def _update_api_button_status(self, status, duration=2000):
+        """Update API test button with status (GOOD/BAD) for a short time"""
+        original_text = "Test API Connection"
+        if status == "GOOD":
+            self.test_api_btn.setText(f"Test API Connection - ✓ GOOD")
+            self.test_api_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #4CAF50;
+                    color: white;
+                    border: none;
+                    padding: 5px;
+                    border-radius: 3px;
+                    font-weight: bold;
+                }
+            """)
+        elif status == "BAD":
+            self.test_api_btn.setText(f"Test API Connection - ✗ BAD")
+            self.test_api_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #f44336;
+                    color: white;
+                    border: none;
+                    padding: 5px;
+                    border-radius: 3px;
+                    font-weight: bold;
+                }
+            """)
+
+        # Reset after duration
+        QTimer.singleShot(duration, lambda: self._reset_api_button())
+
+    def _reset_api_button(self):
+        """Reset API test button to original state"""
+        self.test_api_btn.setText("Test API Connection")
+        self.test_api_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #2196F3;
+                color: white;
+                border: none;
+                padding: 5px;
+                border-radius: 3px;
+            }
+            QPushButton:hover {
+                background-color: #0b7dda;
+            }
+        """)
+
+    def test_openai_api(self):
+        """Test OpenAI API connection with a simple request"""
+        logger.info("=== TEST OPENAI API BUTTON CLICKED ===")
+        import requests
+        import base64
+        from pathlib import Path
+
+        api_key = self.openai_key.text().strip()
+        logger.info(f"API key field value: {'[present]' if api_key else '[empty]'}")
+
+        if not api_key:
+            self._update_api_button_status("BAD")
+            QMessageBox.warning(
+                self,
+                "No API Key",
+                "Please enter your OpenAI API key before testing."
+            )
+            return
+
+        # Show progress dialog
+        progress = QMessageBox(self)
+        progress.setWindowTitle("Testing API")
+        progress.setText("Testing OpenAI API connection...\n\nPlease wait...")
+        progress.setStandardButtons(QMessageBox.StandardButton.NoButton)
+        progress.show()
+        QApplication.processEvents()
+
+        try:
+            # Create a simple test image (1x1 pixel PNG)
+            test_image_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
+
+            logger.info("Testing OpenAI API with test request...")
+
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}"
+            }
+
+            payload = {
+                "model": "gpt-4o",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "This is a test. Please respond with 'API connection successful'."
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/png;base64,{test_image_b64}"
+                                }
+                            }
+                        ]
+                    }
+                ],
+                "max_tokens": 50
+            }
+
+            response = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=30
+            )
+
+            progress.close()
+
+            if response.status_code == 200:
+                result = response.json()
+                content = result['choices'][0]['message']['content']
+
+                self._update_api_button_status("GOOD")
+                QMessageBox.information(
+                    self,
+                    "API Test Successful",
+                    f"✅ OpenAI API connection successful!\n\n"
+                    f"Response: {content[:100]}...\n\n"
+                    f"Your API key is valid and working.\n"
+                    f"Model: {result.get('model', 'gpt-4o')}"
+                )
+                logger.info("OpenAI API test successful")
+
+            elif response.status_code == 401:
+                self._update_api_button_status("BAD")
+                QMessageBox.critical(
+                    self,
+                    "Authentication Failed",
+                    "❌ Invalid API key\n\n"
+                    "The API key you entered is not valid.\n"
+                    "Please check your API key and try again.\n\n"
+                    "Get your API key at: https://platform.openai.com/api-keys"
+                )
+                logger.error("OpenAI API test failed: Invalid API key")
+
+            elif response.status_code == 429:
+                self._update_api_button_status("BAD")
+                QMessageBox.warning(
+                    self,
+                    "Rate Limit Exceeded",
+                    "⚠️ Rate limit exceeded\n\n"
+                    "Your account has exceeded the rate limit.\n"
+                    "Please wait a moment and try again.\n\n"
+                    f"Error: {response.text[:200]}"
+                )
+                logger.error("OpenAI API test failed: Rate limit exceeded")
+
+            elif response.status_code == 402:
+                self._update_api_button_status("BAD")
+                QMessageBox.critical(
+                    self,
+                    "Payment Required",
+                    "❌ Payment required\n\n"
+                    "Your OpenAI account requires payment setup.\n"
+                    "Please add a payment method to your account.\n\n"
+                    "Visit: https://platform.openai.com/account/billing"
+                )
+                logger.error("OpenAI API test failed: Payment required")
+
+            else:
+                self._update_api_button_status("BAD")
+                QMessageBox.critical(
+                    self,
+                    "API Test Failed",
+                    f"❌ API test failed\n\n"
+                    f"Status code: {response.status_code}\n"
+                    f"Error: {response.text[:200]}"
+                )
+                logger.error(f"OpenAI API test failed: {response.status_code} - {response.text[:200]}")
+
+        except requests.exceptions.Timeout:
+            progress.close()
+            self._update_api_button_status("BAD")
+            QMessageBox.critical(
+                self,
+                "Connection Timeout",
+                "❌ Connection timeout\n\n"
+                "The request to OpenAI API timed out.\n"
+                "Please check your internet connection and try again."
+            )
+            logger.error("OpenAI API test failed: Timeout")
+
+        except requests.exceptions.ConnectionError:
+            progress.close()
+            self._update_api_button_status("BAD")
+            QMessageBox.critical(
+                self,
+                "Connection Error",
+                "❌ Connection error\n\n"
+                "Could not connect to OpenAI API.\n"
+                "Please check your internet connection and try again."
+            )
+            logger.error("OpenAI API test failed: Connection error")
+
+        except Exception as e:
+            progress.close()
+            self._update_api_button_status("BAD")
+            QMessageBox.critical(
+                self,
+                "Test Failed",
+                f"❌ API test failed\n\n"
+                f"Error: {str(e)}"
+            )
+            logger.error(f"OpenAI API test failed: {e}")
+
     def setup_google_drive(self):
         """Launch Google Drive OAuth setup"""
         msg = QMessageBox()
@@ -4647,13 +5079,27 @@ class ConfigTab(QWidget):
             # Reload config
             self.config_manager.load_config()
             self.config = self.config_manager.config
-            
+
+            # Reload OpenAI settings in UI to reflect config file values
+            self._reload_openai_settings()
+
             # Update status silently without popup
             status = "enabled" if enabled else "disabled"
             logger.info(f"Logging has been {status}")
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Failed to update logging: {str(e)}")
     
+    def _reload_openai_settings(self):
+        """Reload OpenAI settings from config into UI fields"""
+        try:
+            openai_config = self.config.get('openai', {})
+            self.openai_enabled.setChecked(openai_config.get('enabled', False))
+            self.openai_key.setText(openai_config.get('api_key', ''))
+            self.openai_limit.setValue(openai_config.get('max_images_per_hour', 10))
+            logger.debug("Reloaded OpenAI settings from config")
+        except Exception as e:
+            logger.error(f"Error reloading OpenAI settings: {e}")
+
     def update_logging_status(self, enabled):
         """Update the logging status display"""
         if enabled:
@@ -4678,9 +5124,9 @@ class ConfigTab(QWidget):
             
             # Update config with UI values
             self.config['email'] = {
-                'sender': self.email_sender.text(),
-                'password': self.email_password.text(),
-                'receivers': {'primary': self.email_sender.text()},
+                'sender': self.email_sender.text().strip(),
+                'password': self.email_password.text().strip(),
+                'receivers': {'primary': self.email_sender.text().strip()},
                 'smtp_server': 'smtp.gmail.com',
                 'smtp_port': 465,
                 'enabled': self.email_notifications_enabled.isChecked(),
@@ -4709,7 +5155,7 @@ class ConfigTab(QWidget):
             }
             
             self.config['openai'] = {
-                'api_key': self.openai_key.text(),
+                'api_key': self.openai_key.text().strip(),
                 'enabled': self.openai_enabled.isChecked(),
                 'max_images_per_hour': self.openai_limit.value()
             }
@@ -4757,25 +5203,57 @@ class ConfigTab(QWidget):
     def on_test_email(self):
         """Send test email"""
         try:
-            # Get email handler from main window
-            main_window = self.window()
-            if hasattr(main_window, 'email_handler') and main_window.email_handler:
-                test_info = {
-                    'hostname': 'test-system',
-                    'ip_address': '127.0.0.1',
-                    'uptime': '5 minutes'
-                }
-                result = main_window.email_handler.send_reboot_notification(test_info)
-                if result:
-                    QMessageBox.information(self, "Test Email", "Test email sent successfully!")
-                else:
-                    QMessageBox.warning(self, "Test Email", "Failed to send test email. Check logs for details.")
-                logger.info("Test email sent")
+            # First, update config with current UI values (but don't save to file yet)
+            email_config = {
+                'sender': self.email_sender.text().strip(),
+                'password': self.email_password.text().strip(),
+                'receivers': {'primary': self.email_sender.text().strip()},
+                'smtp_server': 'smtp.gmail.com',
+                'smtp_port': 465,
+                'enabled': self.email_notifications_enabled.isChecked(),
+                'hourly_reports': self.hourly_reports_enabled.isChecked(),
+                'daily_email_time': '16:30',
+                'quiet_hours': {'start': 23, 'end': 5}
+            }
+
+            # Validate email settings
+            if not email_config['sender']:
+                QMessageBox.warning(self, "Email Not Configured",
+                                  "Please enter your sender email address.")
+                return
+            if not email_config['password']:
+                QMessageBox.warning(self, "Email Not Configured",
+                                  "Please enter your app password.")
+                return
+
+            # Create temporary email handler with current settings
+            temp_config = self.config.copy()
+            temp_config['email'] = email_config
+
+            logger.info("Creating temporary EmailHandler for test email")
+            test_handler = EmailHandler(temp_config)
+
+            # Send test email
+            test_info = {
+                'hostname': 'test-system',
+                'ip_address': '127.0.0.1',
+                'uptime': '5 minutes'
+            }
+            result = test_handler.send_reboot_notification(test_info)
+            if result:
+                QMessageBox.information(self, "Test Email", "Test email sent successfully!")
             else:
-                QMessageBox.warning(self, "Test Email", "Email handler not initialized")
+                QMessageBox.warning(self, "Test Email",
+                                  "Failed to send test email. Check logs for details.\n\n"
+                                  "Common issues:\n"
+                                  "- Incorrect app password\n"
+                                  "- 2-factor authentication not enabled\n"
+                                  "- App password needs to be generated at:\n"
+                                  "  https://myaccount.google.com/apppasswords")
+            logger.info("Test email sent")
         except Exception as e:
-            logger.error(f"Error sending test email: {e}")
-            QMessageBox.critical(self, "Error", f"Failed to send test email: {str(e)}")
+            logger.error(f"Error sending test email: {e}", exc_info=True)
+            QMessageBox.critical(self, "Error", f"Failed to send test email:\n\n{str(e)}")
 
 class LogsTab(QWidget):
     """Real-time logs tab"""
@@ -4923,10 +5401,13 @@ class MainWindow(QMainWindow):
         super().__init__()
         current_dir = Path(__file__).parent.name
         self.base_title = f"Bird Detection System - {current_dir}"
-        self.setGeometry(100, 100, 1250, 1036)  # Default app size
+
+        # Set window size to 1211x1013
+        self.resize(1211, 1013)
+
         # Set initial title with dimensions
         current_time = datetime.now().strftime("%H:%M:%S")
-        self.setWindowTitle(f"{self.base_title} - {current_time} - 1250x1036")
+        self.setWindowTitle(f"{self.base_title} - {current_time} - 1211x1013")
         # Remove fixed size constraint to allow manual fullscreen/maximize
         self.setMinimumSize(1000, 750)  # Set minimum instead of fixed
         
@@ -4940,6 +5421,13 @@ class MainWindow(QMainWindow):
         self.cleanup_timer.timeout.connect(self.check_cleanup_time)
         self.cleanup_timer.start(60000)  # Check every minute
         self.last_cleanup_date = None
+
+        # GUI Freeze Detection Watchdog
+        self.gui_watchdog_timer = QTimer()
+        self.gui_watchdog_timer.timeout.connect(self.gui_watchdog_check)
+        self.gui_watchdog_timer.start(15000)  # Check every 15 seconds
+        self.last_gui_check = time.time()
+        logger.info("[FREEZE-WATCHDOG] GUI watchdog timer initialized")
         
         # Load configuration
         self.config_manager = ConfigManager()
@@ -5304,7 +5792,47 @@ class MainWindow(QMainWindow):
         width = self.width()
         height = self.height()
         self.setWindowTitle(f"{self.base_title} - {current_time} - {width}x{height}")
-    
+
+    def gui_watchdog_check(self):
+        """Check if GUI event loop is responsive - detects freezes"""
+        current_time = time.time()
+        time_since_last = current_time - self.last_gui_check
+
+        # If this method is called, it means Qt's event loop is still running
+        logger.info(f"[FREEZE-WATCHDOG] GUI event loop responsive - interval: {time_since_last:.1f}s")
+
+        # Write heartbeat file for external watchdog monitoring
+        try:
+            heartbeat_file = Path(__file__).parent / 'logs' / 'heartbeat.txt'
+            with open(heartbeat_file, 'w') as f:
+                f.write(f"{current_time}\n")
+        except Exception as e:
+            logger.error(f"[FREEZE-WATCHDOG] Failed to write heartbeat file: {e}")
+
+        # Check if camera thread is sending frames
+        if hasattr(self, 'camera_tab') and hasattr(self.camera_tab, 'last_frame_update_time'):
+            time_since_frame = current_time - self.camera_tab.last_frame_update_time
+            if time_since_frame > 30:
+                logger.warning(f"[FREEZE-WATCHDOG] No frame updates for {time_since_frame:.1f}s - possible GUI display freeze!")
+                # Force camera reconnect to try to unstick the system
+                if hasattr(self, 'camera_controller') and self.camera_controller.is_connected():
+                    logger.error(f"[FREEZE-WATCHDOG] Forcing camera reconnect to recover from display freeze")
+                    try:
+                        self.camera_controller.disconnect()
+                    except Exception as e:
+                        logger.error(f"[FREEZE-WATCHDOG] Failed to disconnect camera: {e}")
+            elif time_since_frame > 10:
+                logger.info(f"[FREEZE-WATCHDOG] Slow frame updates: {time_since_frame:.1f}s since last frame")
+
+        # Check camera thread status
+        if hasattr(self, 'camera_thread') and self.camera_thread:
+            if self.camera_thread.isRunning():
+                logger.debug(f"[FREEZE-WATCHDOG] Camera thread running")
+            else:
+                logger.error(f"[FREEZE-WATCHDOG] Camera thread NOT running!")
+
+        self.last_gui_check = current_time
+
     def resizeEvent(self, event):
         """Handle window resize events to update dimensions in title"""
         super().resizeEvent(event)

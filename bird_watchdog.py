@@ -137,10 +137,29 @@ class BirdDetectionWatchdog:
         """Check if the application is healthy"""
         if not self.is_process_running():
             return False
-        
-        # Additional health checks can be added here
-        # For example, check if GUI is responsive, check log files, etc.
-        
+
+        # Check heartbeat file to detect GUI freezes
+        heartbeat_file = Path(self.working_dir) / 'logs' / 'heartbeat.txt'
+        try:
+            if heartbeat_file.exists():
+                with open(heartbeat_file, 'r') as f:
+                    heartbeat_timestamp = float(f.read().strip())
+
+                current_time = time.time()
+                time_since_heartbeat = current_time - heartbeat_timestamp
+
+                # If no heartbeat for 60 seconds, GUI is frozen
+                if time_since_heartbeat > 60:
+                    logger.error(f"GUI FROZEN: No heartbeat for {time_since_heartbeat:.1f}s - killing frozen process")
+                    return False
+
+                logger.debug(f"Heartbeat OK: {time_since_heartbeat:.1f}s ago")
+            else:
+                # Heartbeat file doesn't exist yet - app might be starting up
+                logger.debug("Heartbeat file not found (app starting?)")
+        except Exception as e:
+            logger.warning(f"Error checking heartbeat: {e}")
+
         return True
     
     def restart_application(self):
