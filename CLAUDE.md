@@ -2,6 +2,52 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Table of Contents
+
+1. [Development Commands](#development-commands)
+   - [Installation & Setup](#installation--setup)
+   - [Running the Application](#running-the-application)
+   - [Testing Camera Connection](#testing-camera-connection)
+   - [Services & Background Processes](#services--background-processes)
+   - [Web Interface](#web-interface)
+   - [Logs and Debugging](#logs-and-debugging)
+
+2. [Recent Updates](#recent-updates)
+   - [2025-11-14: ROI Persistence & Statistics Display](#recent-updates-2025-11-14---roi-persistence--statistics-display)
+   - [2025-11-08/09: Freeze Recovery & Power Investigation](#recent-updates-2025-11-0809---freeze-recovery--power-investigation)
+   - [2025-10-30 to 2025-11-03: Configuration & Email Fixes](#recent-updates-2025-10-30-to-2025-11-03)
+
+3. [Architecture Overview](#architecture-overview)
+   - [Core Components](#core-components)
+   - [Data Flow](#data-flow)
+   - [Configuration](#configuration)
+   - [Key Architectural Patterns](#key-architectural-patterns)
+
+4. [Critical Bug Fixes & Error Handling](#critical-bug-fixes--error-handling)
+   - [X_LINK Error Handling](#x_link-error-handling-camera-usb-disconnect)
+   - [GUI Freeze Fix](#gui-freeze-fix-frame-display)
+   - [Camera Reconnection Logic](#camera-reconnection-logic)
+   - [Freeze Detection Logging](#freeze-detection-logging)
+
+5. [Feature Details & Implementation Guide](#feature-details--implementation-guide)
+   - [Motion Detection with ROI](#1-motion-detection-with-roi-region-of-interest)
+   - [AI Bird Identification](#2-ai-bird-identification-openai-vision-api)
+   - [Multi-Process Google Drive Upload](#3-multi-process-google-drive-upload)
+   - [Email Notification Service](#4-email-notification-service)
+   - [Species Gallery & Database](#5-species-gallery--database)
+   - [Storage Cleanup Manager](#6-storage-cleanup-manager)
+   - [Web Interface](#7-web-interface-mobile-access)
+   - [Camera Configuration & Controls](#8-camera-configuration--controls)
+   - [Application Window & UI](#9-application-window--ui)
+
+6. [Common Pitfalls & Solutions](#common-pitfalls--solutions)
+
+7. [Troubleshooting Common Issues](#troubleshooting-common-issues)
+
+8. [Development Best Practices](#development-best-practices)
+
+---
+
 ## Development Commands
 
 ### Installation & Setup
