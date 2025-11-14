@@ -794,9 +794,9 @@ class CameraTab(QWidget):
         # Exposure slider
         camera_layout.addWidget(QLabel("Exposure:"), 1, 0)
         self.exposure_slider = QSlider(Qt.Orientation.Horizontal)
-        # Range: 1-330 (represents 0.1ms to 33ms in 0.1ms increments)
-        self.exposure_slider.setRange(1, 330)
-        self.exposure_slider.setValue(20)
+        # Range: 1-3300 (represents 0.01ms to 33ms in 0.01ms increments)
+        self.exposure_slider.setRange(1, 3300)
+        self.exposure_slider.setValue(200)
         self.exposure_slider.valueChanged.connect(self.on_exposure_changed)
         camera_layout.addWidget(self.exposure_slider, 1, 1)
         self.exposure_value = QLabel("2.0ms")
@@ -1264,9 +1264,9 @@ class CameraTab(QWidget):
     
     def on_exposure_changed(self, value):
         """Handle exposure slider change"""
-        # Slider value is in 0.1ms units (1-330 = 0.1-33ms)
-        exposure_ms = value / 10.0
-        self.exposure_value.setText(f"{exposure_ms:.1f}ms")
+        # Slider value is in 0.01ms units (1-3300 = 0.01-33ms)
+        exposure_ms = value / 100.0
+        self.exposure_value.setText(f"{exposure_ms:.2f}ms")
         if not self.auto_exposure_cb.isChecked():
             self.camera_controller.update_camera_setting('exposure', exposure_ms)
     
@@ -1776,9 +1776,9 @@ class CameraTab(QWidget):
             # Load camera settings
             camera_config = self.config.get('camera', {})
             self.focus_slider.setValue(camera_config.get('focus', 128))
-            # Convert exposure from ms to slider units (0.1ms increments)
+            # Convert exposure from ms to slider units (0.01ms increments)
             exposure_ms = camera_config.get('exposure_ms', 2.0)
-            self.exposure_slider.setValue(int(exposure_ms * 10))
+            self.exposure_slider.setValue(int(exposure_ms * 100))
             self.wb_slider.setValue(camera_config.get('white_balance', 6637))
             self.brightness_slider.setValue(camera_config.get('brightness', 0))
             self.brightness_value.setText(str(self.brightness_slider.value()))
@@ -1845,8 +1845,8 @@ class CameraTab(QWidget):
                 changes.append(f"• Focus: {old_focus} → {new_focus}")
             
             old_exposure = self.config['camera'].get('exposure_ms', 2.0)
-            # Convert slider value (0.1ms units) to milliseconds
-            new_exposure = self.exposure_slider.value() / 10.0
+            # Convert slider value (0.01ms units) to milliseconds
+            new_exposure = self.exposure_slider.value() / 100.0
             if old_exposure != new_exposure:
                 changes.append(f"• Exposure: {old_exposure:.1f}ms → {new_exposure:.1f}ms")
             
