@@ -241,19 +241,19 @@ class InteractivePreviewLabel(QLabel):
         self.drag_threshold = 5  # pixels
     
     def scale_for_fullscreen(self, is_fullscreen=False):
-        """Scale the preview size based on window state"""
+        """Scale the preview size based on window state using zoom factor"""
+        # IMPORTANT: Never modify base_width/base_height - they must stay at resolution-specific values
+        # Instead, adjust zoom_factor to scale the display
         if is_fullscreen:
             # Scale up to 1.5x size in fullscreen
-            self.base_width = 900
-            self.base_height = 600
+            self.zoom_factor = 1.5
         else:
-            # Use base size for windowed mode
-            self.base_width = 600
-            self.base_height = 400
-        
-        # Apply current zoom to new base size
+            # Use 1.0x zoom for windowed mode
+            self.zoom_factor = 1.0
+
+        # Apply zoom to base size
         self.update_size()
-        logger.debug(f"Preview base scaled to {self.base_width}x{self.base_height} (fullscreen: {is_fullscreen})")
+        logger.debug(f"Preview scaled via zoom {self.zoom_factor}x (fullscreen: {is_fullscreen})")
     
     def wheelEvent(self, event):
         """Handle mouse wheel for zooming"""
@@ -1039,9 +1039,23 @@ class CameraTab(QWidget):
         self.last_capture_label.setStyleSheet("font-size: 11px;")
         stats_layout.addWidget(self.last_capture_label, 1, 1)
         
-        # Empty slots for alignment
-        stats_layout.addWidget(QLabel(""), 2, 1)
-        stats_layout.addWidget(QLabel(""), 3, 1)
+        # Preview and capture info
+        self.preview_res_label = QLabel("Preview: Unknown")
+        self.preview_res_label.setStyleSheet("font-size: 11px;")
+        stats_layout.addWidget(self.preview_res_label, 2, 1)
+
+        self.capture_res_label = QLabel("Capture: Unknown")
+        self.capture_res_label.setStyleSheet("font-size: 11px;")
+        stats_layout.addWidget(self.capture_res_label, 3, 1)
+
+        # Column 3 - Zoom and ROI
+        self.zoom_label = QLabel("Zoom: 1.00x")
+        self.zoom_label.setStyleSheet("font-size: 11px;")
+        stats_layout.addWidget(self.zoom_label, 0, 2)
+
+        self.roi_label = QLabel("ROI: None")
+        self.roi_label.setStyleSheet("font-size: 11px;")
+        stats_layout.addWidget(self.roi_label, 1, 2)
         
         
         # Create label references for updates (hidden labels for compatibility)
@@ -1184,8 +1198,49 @@ class CameraTab(QWidget):
         else:
             self.last_capture_label.setText("Last Capture: None")
         
-        # Update resolution mode
-        self.resolution_mode_label.setText("Resolution: 4K")
+        # Update resolution mode (capture resolution from config)
+        capture_res = self.config.get('camera', {}).get('resolution', '13mp')
+        self.resolution_mode_label.setText(f"Resolution: {capture_res}")
+
+        # Update preview resolution
+        preview_res = self.config.get('camera', {}).get('preview_resolution', 'THE_720_P')
+        # Convert preview resolution to readable format
+        preview_map = {
+            'THE_1211x1013': '1211x1013',
+            'THE_1250x1036': '1250x1036',
+            'THE_1080_P': '1080p',
+            'THE_720_P': '720p',
+            'THE_480_P': '480p',
+            'THE_400_P': '400p',
+            'THE_300_P': '300p'
+        }
+        preview_readable = preview_map.get(preview_res, preview_res)
+        self.preview_res_label.setText(f"Preview: {preview_readable}")
+
+        # Update capture resolution (more detailed than mode)
+        capture_readable = capture_res.upper()
+        self.capture_res_label.setText(f"Capture: {capture_readable}")
+
+        # Update zoom level
+        if hasattr(self.preview_label, 'zoom_factor'):
+            zoom = self.preview_label.zoom_factor
+            self.zoom_label.setText(f"Zoom: {zoom:.2f}x")
+
+        # Update ROI info
+        if self.camera_controller.roi_defined and hasattr(self.preview_label, 'roi_rect'):
+            roi_rect = self.preview_label.roi_rect
+            if not roi_rect.isEmpty():
+                # Show ROI in base coordinates (not zoomed)
+                zoom_factor = getattr(self.preview_label, 'zoom_factor', 1.0)
+                base_x = int(roi_rect.x() / zoom_factor)
+                base_y = int(roi_rect.y() / zoom_factor)
+                base_w = int(roi_rect.width() / zoom_factor)
+                base_h = int(roi_rect.height() / zoom_factor)
+                self.roi_label.setText(f"ROI: {base_x},{base_y} {base_w}x{base_h}")
+            else:
+                self.roi_label.setText("ROI: None")
+        else:
+            self.roi_label.setText("ROI: None")
     
     def on_motion_detected(self):
         """Called when motion is detected - updates stats"""
@@ -1605,45 +1660,64 @@ class CameraTab(QWidget):
                 roi_config = motion_config.get('default_roi', {})
                 logger.info("Loading default ROI")
             # Check if ROI should be loaded (enabled for default_roi, or any current_roi)
-            should_load = (roi_config.get('enabled', False) or 
+            should_load = (roi_config.get('enabled', False) or
                           ('current_roi' in motion_config and roi_config))
-            
+
             if should_load and roi_config:
-                # Original ROI coordinates from config
-                orig_x = roi_config.get('x', 0)
-                orig_y = roi_config.get('y', 0)
-                orig_width = roi_config.get('width', 600)
-                orig_height = roi_config.get('height', 400)
-                
+                # ROI coordinates from config are in base coordinates
+                logger.info("=" * 80)
+                logger.info("ROI LOAD TEST - AFTER RESTART")
+                logger.info(f"  LOADED FROM CONFIG: {roi_config}")
+
+                base_x = roi_config.get('x', 0)
+                base_y = roi_config.get('y', 0)
+                base_width = roi_config.get('width', 600)
+                base_height = roi_config.get('height', 400)
+                saved_zoom_x = roi_config.get('zoom_x', 1.0)
+                saved_zoom_y = roi_config.get('zoom_y', 1.0)
+
+                logger.info(f"  Base coords from config: x={base_x}, y={base_y}, w={base_width}, h={base_height}")
+                logger.info(f"  Base end point from config: x2={base_x + base_width}, y2={base_y + base_height}")
+                logger.info(f"  Saved zoom from config: X={saved_zoom_x:.6f}, Y={saved_zoom_y:.6f}")
+
                 # Get current preview dimensions
-                preview_width = 600  # Current fixed preview width
-                preview_height = 400  # Current fixed preview height
-                
-                # Scale ROI coordinates if they extend beyond current preview
-                if orig_x + orig_width > preview_width or orig_y + orig_height > preview_height:
-                    # Calculate scale factor based on the larger dimension that overflows
-                    scale_x = preview_width / (orig_x + orig_width) if orig_x + orig_width > preview_width else 1.0
-                    scale_y = preview_height / (orig_y + orig_height) if orig_y + orig_height > preview_height else 1.0
-                    scale = min(scale_x, scale_y)
-                    
-                    x = int(orig_x * scale)
-                    y = int(orig_y * scale)
-                    width = int(orig_width * scale)
-                    height = int(orig_height * scale)
-                    
-                    logger.info(f"Scaled ROI from ({orig_x}, {orig_y}, {orig_width}x{orig_height}) to ({x}, {y}, {width}x{height})")
-                else:
-                    # Use original coordinates if they fit
-                    x, y, width, height = orig_x, orig_y, orig_width, orig_height
-                
-                # Ensure ROI stays within preview bounds
-                x = max(0, min(x, preview_width - 1))
-                y = max(0, min(y, preview_height - 1))
-                width = min(width, preview_width - x)
-                height = min(height, preview_height - y)
-                
-                # Set ROI in preview label
-                self.preview_label.set_roi_rect(x, y, width, height)
+                base_preview_width = self.preview_label.base_width if hasattr(self.preview_label, 'base_width') else 600
+                base_preview_height = self.preview_label.base_height if hasattr(self.preview_label, 'base_height') else 400
+                current_widget_width = self.preview_label.width()
+                current_widget_height = self.preview_label.height()
+
+                logger.info(f"  Base preview size: {base_preview_width}x{base_preview_height}")
+                logger.info(f"  Current widget size: {current_widget_width}x{current_widget_height}")
+
+                # Calculate current actual zoom from widget size
+                current_zoom_x = current_widget_width / base_preview_width if base_preview_width > 0 else 1.0
+                current_zoom_y = current_widget_height / base_preview_height if base_preview_height > 0 else 1.0
+
+                logger.info(f"  Calculated current zoom: X={current_zoom_x:.6f}, Y={current_zoom_y:.6f}")
+
+                # Ensure ROI stays within base preview bounds
+                base_x_clamped = max(0, min(base_x, base_preview_width - 1))
+                base_y_clamped = max(0, min(base_y, base_preview_height - 1))
+                base_width_clamped = min(base_width, base_preview_width - base_x_clamped)
+                base_height_clamped = min(base_height, base_preview_height - base_y_clamped)
+
+                if base_x != base_x_clamped or base_y != base_y_clamped or base_width != base_width_clamped or base_height != base_height_clamped:
+                    logger.info(f"  Base coords clamped to: x={base_x_clamped}, y={base_y_clamped}, w={base_width_clamped}, h={base_height_clamped}")
+                    base_x, base_y, base_width, base_height = base_x_clamped, base_y_clamped, base_width_clamped, base_height_clamped
+
+                # Convert base coordinates to current widget coordinates using current zoom
+                widget_x = int(base_x * current_zoom_x)
+                widget_y = int(base_y * current_zoom_y)
+                widget_width = int(base_width * current_zoom_x)
+                widget_height = int(base_height * current_zoom_y)
+
+                logger.info(f"  Widget ROI rect (restored): x={widget_x}, y={widget_y}, w={widget_width}, h={widget_height}")
+                logger.info(f"  Widget ROI end point (restored): x2={widget_x + widget_width}, y2={widget_y + widget_height}")
+
+                # Set ROI in preview label (in widget coordinates)
+                self.preview_label.set_roi_rect(widget_x, widget_y, widget_width, widget_height)
+                logger.info("  ROI SET IN PREVIEW LABEL")
+                logger.info("=" * 80)
 
                 # Scale ROI coordinates from display to camera resolution
                 preview_res_map = {
@@ -1831,19 +1905,62 @@ class CameraTab(QWidget):
             if self.camera_controller.roi_defined:
                 roi_rect = self.preview_label.roi_rect
                 if not roi_rect.isEmpty():
+                    # Log BEFORE SAVE state
+                    logger.info("=" * 80)
+                    logger.info("ROI SAVE TEST - BEFORE SAVE")
+                    logger.info(f"  Widget ROI rect: x={roi_rect.x()}, y={roi_rect.y()}, w={roi_rect.width()}, h={roi_rect.height()}")
+                    logger.info(f"  Widget ROI end point: x2={roi_rect.x() + roi_rect.width()}, y2={roi_rect.y() + roi_rect.height()}")
+
+                    # Calculate actual zoom from current widget size vs base size
+                    # (Don't use zoom_factor attribute - it doesn't account for layout resizing)
+                    base_preview_width = getattr(self.preview_label, 'base_width', 605)
+                    base_preview_height = getattr(self.preview_label, 'base_height', 506)
+                    current_widget_width = self.preview_label.width()
+                    current_widget_height = self.preview_label.height()
+
+                    logger.info(f"  Base preview size: {base_preview_width}x{base_preview_height}")
+                    logger.info(f"  Current widget size: {current_widget_width}x{current_widget_height}")
+
+                    actual_zoom_x = current_widget_width / base_preview_width if base_preview_width > 0 else 1.0
+                    actual_zoom_y = current_widget_height / base_preview_height if base_preview_height > 0 else 1.0
+                    # Use average zoom (or could use max)
+                    actual_zoom = (actual_zoom_x + actual_zoom_y) / 2.0
+
+                    logger.info(f"  Calculated zoom: X={actual_zoom_x:.6f}, Y={actual_zoom_y:.6f}, Avg={actual_zoom:.6f}")
+
+                    # Convert ROI to base coordinates using actual zoom
+                    base_x = int(roi_rect.x() / actual_zoom_x)
+                    base_y = int(roi_rect.y() / actual_zoom_y)
+                    base_width = int(roi_rect.width() / actual_zoom_x)
+                    base_height = int(roi_rect.height() / actual_zoom_y)
+
+                    logger.info(f"  Base coords (before clamping): x={base_x}, y={base_y}, w={base_width}, h={base_height}")
+
+                    base_x = max(0, min(base_x, base_preview_width - 1))
+                    base_y = max(0, min(base_y, base_preview_height - 1))
+                    base_width = min(base_width, base_preview_width - base_x)
+                    base_height = min(base_height, base_preview_height - base_y)
+
+                    logger.info(f"  Base coords (after clamping): x={base_x}, y={base_y}, w={base_width}, h={base_height}")
+                    logger.info(f"  Base end point: x2={base_x + base_width}, y2={base_y + base_height}")
+
                     new_roi = {
-                        'x': roi_rect.x(),
-                        'y': roi_rect.y(),
-                        'width': roi_rect.width(),
-                        'height': roi_rect.height()
+                        'x': base_x,
+                        'y': base_y,
+                        'width': base_width,
+                        'height': base_height,
+                        'zoom': actual_zoom,
+                        'zoom_x': actual_zoom_x,
+                        'zoom_y': actual_zoom_y
                     }
                     old_roi = self.config['motion_detection'].get('current_roi', {})
                     if old_roi != new_roi:
-                        changes.append(f"• ROI: Updated to ({roi_rect.x()}, {roi_rect.y()}, {roi_rect.width()}x{roi_rect.height()})")
+                        changes.append(f"• ROI: Updated to ({base_x}, {base_y}, {base_width}x{base_height}) [zoom: {actual_zoom:.2f}x ({actual_zoom_x:.2f}x{actual_zoom_y:.2f})]")
                         roi_changed = True
-                    
+
                     self.config['motion_detection']['current_roi'] = new_roi
-                    logger.info(f"Saving ROI: {roi_rect}")
+                    logger.info(f"  SAVED TO CONFIG: {new_roi}")
+                    logger.info("=" * 80)
             
             # Save to file
             config_path = os.path.join(
