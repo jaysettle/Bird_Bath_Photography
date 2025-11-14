@@ -140,9 +140,71 @@ grep "FREEZE-WATCHDOG" logs/bird_detection.log    # GUI responsiveness
   - To enable DEBUG: Set `"level": "DEBUG"` in config.json under `"logging"` section
   - Restart app after changing logging level
 
+## Recent Updates (2025-11-14) - ROI Persistence & Statistics Display
+
+### 10. **ROI Persistence Fixed** - Critical fix for ROI coordinate saving/loading (2025-11-14)
+**Problem**: ROI settings would not persist correctly across reboots. ROI saved at coordinates (182, 322, 600x227) would load as (208, 295, 691x208), appearing in a different position.
+
+**Root Cause Identified**:
+- `InteractivePreviewLabel.scale_for_fullscreen()` method (main.py:243-256) was overwriting `base_width` and `base_height` with hardcoded values (900x600 or 600x400)
+- This corrupted the resolution-specific base dimensions that should remain constant at 605x506 (for THE_720_P)
+- When saving ROI, the system calculated zoom as 1.0x instead of the actual 1.5x, resulting in incorrect base coordinates
+
+**Solution Applied**:
+- Changed `scale_for_fullscreen()` to use `zoom_factor` instead of modifying base dimensions:
+  ```python
+  # OLD (WRONG):
+  self.base_width = 900  # Corrupted base dimensions
+  self.base_height = 600
+
+  # NEW (CORRECT):
+  self.zoom_factor = 1.5  # Preserves base dimensions
+  ```
+- This preserves resolution-specific base dimensions while still scaling the widget display
+
+**Enhanced Logging**:
+- Added comprehensive "ROI SAVE TEST" logging before save operations (main.py:1890-1945)
+- Added "ROI LOAD TEST" logging after restart (main.py:1668-1720)
+- Logs show widget coordinates, base coordinates, zoom factors, and clamping operations
+- Makes debugging ROI issues straightforward
+
+**Verification Results**:
+- ✅ Base dimensions now stay at 605x506 (correct for THE_720_P)
+- ✅ Zoom calculated correctly as 1.50x
+- ✅ ROI persists across reboots with ±1 pixel accuracy (acceptable for integer rounding)
+- Test: Saved (179, 383, 612x237) → Restored (178, 382, 611x237)
+
+**Debugging ROI Persistence**:
+```bash
+# View detailed save/load logs
+grep -E "ROI SAVE TEST|ROI LOAD TEST" logs/bird_detection.log | tail -50
+
+# Check saved ROI in config
+cat config.json | grep -A 10 "current_roi"
+```
+
+### 11. **Camera Statistics Display Enhanced** - Added preview/capture info to Statistics section (2025-11-14)
+**Added Fields**:
+- Preview Resolution: Shows preview resolution (e.g., "720p", "1211x1013")
+- Capture Resolution: Shows capture resolution (e.g., "13MP", "4K")
+- Zoom Level: Shows current zoom factor (e.g., "1.50x") - updates every 5 seconds
+- ROI Info: Shows ROI coordinates in base coordinate space or "None"
+
+**Implementation**:
+- Added new labels to Statistics section (main.py:1042-1058)
+- Update logic in `update_camera_stats()` (main.py:1201-1243)
+- Statistics refresh every 5 seconds automatically
+
+**Display Format**:
+```
+Column 1: Model, Connection, Sensor|FPS, Resolution (capture)
+Column 2: Photos|Events, Last Capture, Preview res, Capture res
+Column 3: Zoom level, ROI coordinates
+```
+
 ## Recent Updates (2025-11-08/09) - Freeze Recovery & Power Investigation
 
-### 10. **Automatic Freeze Detection and Recovery** - Critical reliability improvement
+### 12. **Automatic Freeze Detection and Recovery** - Critical reliability improvement
 **Problem**: GUI would freeze (display stopped updating) but camera thread continued running. System did not gracefully recover, requiring manual restart.
 
 **Investigation Findings**:
