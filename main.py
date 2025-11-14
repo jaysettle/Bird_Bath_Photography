@@ -794,8 +794,8 @@ class CameraTab(QWidget):
         # Exposure slider
         camera_layout.addWidget(QLabel("Exposure:"), 1, 0)
         self.exposure_slider = QSlider(Qt.Orientation.Horizontal)
-        # Range: 5-100 (represents 0.5ms to 10ms in 0.1ms increments)
-        self.exposure_slider.setRange(5, 100)
+        # Range: 1-330 (represents 0.1ms to 33ms in 0.1ms increments)
+        self.exposure_slider.setRange(1, 330)
         self.exposure_slider.setValue(20)
         self.exposure_slider.valueChanged.connect(self.on_exposure_changed)
         camera_layout.addWidget(self.exposure_slider, 1, 1)
@@ -1264,7 +1264,7 @@ class CameraTab(QWidget):
     
     def on_exposure_changed(self, value):
         """Handle exposure slider change"""
-        # Slider value is in 0.1ms units (5-100 = 0.5-10ms)
+        # Slider value is in 0.1ms units (1-330 = 0.1-33ms)
         exposure_ms = value / 10.0
         self.exposure_value.setText(f"{exposure_ms:.1f}ms")
         if not self.auto_exposure_cb.isChecked():
