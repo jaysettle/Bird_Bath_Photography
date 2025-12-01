@@ -93,7 +93,7 @@ class CameraController:
         self.control_queue = None
 
         # Preview resolution (can be changed dynamically)
-        self.preview_resolution = 'THE_1211x1013'  # Default preview resolution
+        self.preview_resolution = 'THE_1080_P'  # Fixed preview resolution (1920x1080)
 
         # Motion detection
         self.motion_detector = MotionDetector(
@@ -111,11 +111,12 @@ class CameraController:
         self.ae_start_pt = (-1, -1)
         self.ae_end_pt = (-1, -1)
         
-        
+
         # Capture control
         self.last_capture_time = 0
         self.debounce_time = self.motion_config['debounce_time']
-        
+        logger.info(f"Debounce time initialized: {self.debounce_time}s")
+
         # Threading
         self.control_lock = threading.Lock()
         self.last_control_time = 0
@@ -700,12 +701,17 @@ class CameraController:
 
                 if setting == 'focus':
                     ctrl.setManualFocus(value)
+                    # Update config so overlay shows correct value
+                    self.config['focus'] = value
                 elif setting == 'exposure':
                     # Use ISO from config (default to 800 if not set)
                     iso = self.config.get('iso_max', 800)
-                    ctrl.setManualExposure(value * 1000, iso)
+                    exposure_us = int(value * 1000)
+                    logger.info(f"[EXPOSURE] Setting manual exposure: {value}ms ({exposure_us}us), ISO={iso}")
+                    ctrl.setManualExposure(exposure_us, iso)
                     # Update config so overlay shows correct value
                     self.config['exposure_ms'] = value
+                    logger.info(f"[EXPOSURE] Config updated: exposure_ms={value}")
                 elif setting == 'iso':
                     # ISO is set as part of exposure, so update exposure with new ISO
                     exposure_us = self.config.get('exposure_ms', 20) * 1000
@@ -724,11 +730,15 @@ class CameraController:
                     ctrl.setBrightness(value)
                 elif setting == 'auto_exposure':
                     if value:
+                        logger.info(f"[EXPOSURE] Enabling auto exposure")
                         ctrl.setAutoExposureEnable()
                     else:
                         # Use ISO from config when disabling auto exposure
                         iso = self.config.get('iso_max', 800)
-                        ctrl.setManualExposure(self.config['exposure_ms'] * 1000, iso)
+                        exposure_ms = self.config.get('exposure_ms', 20)
+                        exposure_us = int(exposure_ms * 1000)
+                        logger.info(f"[EXPOSURE] Disabling auto exposure - setting manual: {exposure_ms}ms ({exposure_us}us), ISO={iso}")
+                        ctrl.setManualExposure(exposure_us, iso)
 
                 self.control_queue.send(ctrl)
                 logger.info(f"Camera setting updated: {setting} = {value}")

@@ -110,7 +110,7 @@ class ConfigManager:
             "motion_detection": {
                 "threshold": 50,
                 "min_area": 500,
-                "debounce_time": 5.0,
+                "debounce_time": 4.0,
                 "default_roi": {
                     "enabled": True,
                     "x": 43,
@@ -201,19 +201,12 @@ class InteractivePreviewLabel(QLabel):
     
     def __init__(self):
         super().__init__()
-        # Default camera preview dimensions
-        self.base_width = 600
-        self.base_height = 400
+        # Fixed preview dimensions for 1080p (scaled down to fit UI)
+        # 1920x1080 scaled by 0.5 = 960x540
+        self.base_width = 960
+        self.base_height = 540
         self.aspect_ratio = self.base_width / self.base_height
-        
-        # Zoom functionality
-        self.zoom_factor = 1.0
-        self.min_zoom = 0.5
-        self.max_zoom = 3.0
-        self.zoom_step = 0.1
-        self.current_width = self.base_width
-        self.current_height = self.base_height
-        
+
         self.setFixedSize(self.base_width, self.base_height)
         self.setStyleSheet("border: 2px solid #555555; background-color: #252525; border-radius: 6px;")
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -239,109 +232,7 @@ class InteractivePreviewLabel(QLabel):
         self.right_button_pressed = False
         self.right_click_start = None
         self.drag_threshold = 5  # pixels
-    
-    def scale_for_fullscreen(self, is_fullscreen=False):
-        """Scale the preview size based on window state using zoom factor"""
-        # IMPORTANT: Never modify base_width/base_height - they must stay at resolution-specific values
-        # Instead, adjust zoom_factor to scale the display
-        if is_fullscreen:
-            # Scale up to 1.5x size in fullscreen
-            self.zoom_factor = 1.5
-        else:
-            # Use 1.0x zoom for windowed mode
-            self.zoom_factor = 1.0
 
-        # Apply zoom to base size
-        self.update_size()
-        logger.debug(f"Preview scaled via zoom {self.zoom_factor}x (fullscreen: {is_fullscreen})")
-    
-    def wheelEvent(self, event):
-        """Handle mouse wheel for zooming"""
-        # Get wheel delta
-        delta = event.angleDelta().y()
-        
-        if delta > 0:
-            # Zoom in
-            new_zoom = min(self.zoom_factor + self.zoom_step, self.max_zoom)
-        else:
-            # Zoom out
-            new_zoom = max(self.zoom_factor - self.zoom_step, self.min_zoom)
-        
-        if new_zoom != self.zoom_factor:
-            self.zoom_factor = new_zoom
-            self.update_size()
-            logger.debug(f"Zoom changed to {self.zoom_factor:.1f}x")
-    
-    def update_size(self):
-        """Update the widget size based on current zoom factor"""
-        old_width = getattr(self, 'current_width', self.base_width)
-        old_height = getattr(self, 'current_height', self.base_height)
-        
-        self.current_width = int(self.base_width * self.zoom_factor)
-        self.current_height = int(self.base_height * self.zoom_factor)
-        self.setFixedSize(self.current_width, self.current_height)
-        
-        # Scale ROI if it exists and size changed
-        if not self.roi_rect.isEmpty() and (old_width != self.current_width or old_height != self.current_height):
-            self.scale_roi(old_width, old_height, self.current_width, self.current_height)
-    
-    def reset_zoom(self):
-        """Reset zoom to 1.0x"""
-        self.zoom_factor = 1.0
-        self.update_size()
-        logger.info("Preview zoom reset to 1.0x")
-
-    def set_preview_resolution(self, resolution):
-        """Update preview widget size based on camera resolution"""
-        # Map resolution to appropriate display size
-        resolution_display_map = {
-            'THE_1211x1013': (605, 506),   # Scale down by ~2x for display
-            'THE_1250x1036': (625, 518),   # Scale down by 2x for display
-            'THE_1080_P': (640, 360),       # Scale 1920x1080 to fit
-            'THE_720_P': (640, 360),        # Scale 1280x720
-            'THE_480_P': (640, 480),        # Keep 640x480
-            'THE_400_P': (640, 400),        # Keep 640x400
-            'THE_300_P': (640, 300)         # Keep 640x300
-        }
-
-        # Get display dimensions for this resolution
-        display_width, display_height = resolution_display_map.get(resolution, (605, 506))
-
-        # Update base dimensions
-        self.base_width = display_width
-        self.base_height = display_height
-        self.aspect_ratio = self.base_width / self.base_height
-
-        # Apply zoom and update size
-        self.update_size()
-
-        logger.info(f"Preview widget size updated to {display_width}x{display_height} for resolution {resolution}")
-    
-    def scale_roi(self, old_width, old_height, new_width, new_height):
-        """Scale ROI coordinates when preview size changes"""
-        if not self.roi_rect.isEmpty():
-            # Calculate scaling factors
-            scale_x = new_width / old_width
-            scale_y = new_height / old_height
-            
-            # Scale ROI rectangle
-            scaled_x = int(self.roi_rect.x() * scale_x)
-            scaled_y = int(self.roi_rect.y() * scale_y)
-            scaled_width = int(self.roi_rect.width() * scale_x)
-            scaled_height = int(self.roi_rect.height() * scale_y)
-            
-            # Update ROI rectangle
-            old_rect = self.roi_rect
-            self.roi_rect = QRect(scaled_x, scaled_y, scaled_width, scaled_height)
-            
-            # Trigger repaint to show updated ROI
-            self.update()
-            
-            # Emit signal to update camera controller with new coordinates
-            self.roi_selected.emit(QPoint(scaled_x, scaled_y), QPoint(scaled_x + scaled_width, scaled_y + scaled_height))
-            
-            logger.debug(f"ROI scaled from {old_rect} to {self.roi_rect} (preview: {old_width}x{old_height} -> {new_width}x{new_height})")
-        
     def heightForWidth(self, width):
         """Maintain 16:9 aspect ratio (locked)"""
         return int(width * 9 / 16)
@@ -746,9 +637,7 @@ class CameraTab(QWidget):
         preview_center_layout.addStretch()
 
         self.preview_label = InteractivePreviewLabel()
-        # Set initial preview size based on camera resolution
-        camera_res = getattr(self.camera_controller, 'preview_resolution', 'THE_1211x1013')
-        self.preview_label.set_preview_resolution(camera_res)
+        # Preview is now fixed at 960x540 (no need to set resolution)
         self.preview_label.roi_selected.connect(self.on_roi_selected)
         self.preview_label.focus_point_clicked.connect(self.on_focus_point_clicked)
         preview_center_layout.addWidget(self.preview_label)
@@ -882,25 +771,7 @@ class CameraTab(QWidget):
         self.resolution_combo.currentIndexChanged.connect(self.on_resolution_changed)
         camera_layout.addWidget(self.resolution_combo, 7, 1, 1, 2)
 
-        # Preview Resolution dropdown
-        camera_layout.addWidget(QLabel("Preview:"), 8, 0)
-        self.preview_resolution_combo = QComboBox()
-        preview_resolutions = [
-            ("THE_1211x1013", "1211x1013"),
-            ("THE_1250x1036", "1250x1036"),
-            ("THE_1080_P", "1080p"),
-            ("THE_720_P", "720p"),
-            ("THE_480_P", "480p"),
-            ("THE_400_P", "400p"),
-            ("THE_300_P", "300p")
-        ]
-        for res_key, res_name in preview_resolutions:
-            self.preview_resolution_combo.addItem(res_name, res_key)
-
-        # Set default preview resolution (1211x1013)
-        self.preview_resolution_combo.setCurrentIndex(0)
-        # No immediate change handler - will apply on Save
-        camera_layout.addWidget(self.preview_resolution_combo, 8, 1, 1, 2)
+        # Preview resolution is now fixed at 1080p - no UI selector needed
         
         camera_group.setLayout(camera_layout)
         left_layout.addWidget(camera_group)
@@ -943,10 +814,10 @@ class CameraTab(QWidget):
         motion_settings_layout.addWidget(QLabel("Debounce Time:"), 0, 0)
         self.debounce_slider = QSlider(Qt.Orientation.Horizontal)
         self.debounce_slider.setRange(1, 10)
-        self.debounce_slider.setValue(5)
+        self.debounce_slider.setValue(4)
         self.debounce_slider.valueChanged.connect(self.on_debounce_changed)
         motion_settings_layout.addWidget(self.debounce_slider, 0, 1)
-        self.debounce_value = QLabel("5.0s")
+        self.debounce_value = QLabel("4.0s")
         motion_settings_layout.addWidget(self.debounce_value, 0, 2)
         
         motion_settings_group.setLayout(motion_settings_layout)
@@ -1077,6 +948,7 @@ class CameraTab(QWidget):
     
     def update_frame(self, frame):
         """Update the camera preview with new frame"""
+        frame_start_time = time.time()
         try:
             # Freeze detection: Track when update_frame is called
             if not hasattr(self, 'last_frame_update_time'):
@@ -1145,6 +1017,11 @@ class CameraTab(QWidget):
                 if sensor_res == "Unknown":
                     sensor_res = "4056x3040"
                 self.sensor_fps_label.setText(f"Sensor: {sensor_res} | FPS: ~30")
+
+            # Log slow frame updates
+            frame_total_time = time.time() - frame_start_time
+            if frame_total_time > 0.05:  # >50ms is slow for 30fps
+                logger.warning(f"[FRAME-SLOW] update_frame took {frame_total_time:.3f}s - this blocks Qt event loop!")
 
         except Exception as e:
             logger.error(f"Error updating frame display: {e}", exc_info=True)
@@ -1267,14 +1144,23 @@ class CameraTab(QWidget):
         # Slider value is in 0.01ms units (1-3300 = 0.01-33ms)
         exposure_ms = value / 100.0
         self.exposure_value.setText(f"{exposure_ms:.2f}ms")
-        if not self.auto_exposure_cb.isChecked():
+
+        auto_exposure_enabled = self.auto_exposure_cb.isChecked()
+        logger.info(f"[EXPOSURE] Slider changed: value={value}, exposure_ms={exposure_ms:.2f}ms, auto_exposure={auto_exposure_enabled}")
+
+        if not auto_exposure_enabled:
+            logger.info(f"[EXPOSURE] Applying manual exposure: {exposure_ms:.2f}ms")
             self.camera_controller.update_camera_setting('exposure', exposure_ms)
+        else:
+            logger.info(f"[EXPOSURE] Skipping - auto exposure is enabled")
     
     def on_auto_exposure_changed(self, state):
         """Handle auto exposure checkbox change"""
         enabled = state == Qt.CheckState.Checked.value
+        logger.info(f"[EXPOSURE] Auto exposure changed: enabled={enabled}, state={state}")
         self.camera_controller.update_camera_setting('auto_exposure', enabled)
         self.exposure_slider.setEnabled(not enabled)
+        logger.info(f"[EXPOSURE] Exposure slider {'disabled' if enabled else 'enabled'}")
     
     def on_wb_changed(self, value):
         """Handle white balance slider change"""
@@ -1664,94 +1550,33 @@ class CameraTab(QWidget):
                           ('current_roi' in motion_config and roi_config))
 
             if should_load and roi_config:
-                # ROI coordinates from config are in base coordinates
+                # Load ROI coordinates directly (no zoom conversion - fixed 960x540 preview)
                 logger.info("=" * 80)
-                logger.info("ROI LOAD TEST - AFTER RESTART")
-                logger.info(f"  LOADED FROM CONFIG: {roi_config}")
+                logger.info(f"ROI LOAD: {roi_config} (preview: 960x540)")
 
-                base_x = roi_config.get('x', 0)
-                base_y = roi_config.get('y', 0)
-                base_width = roi_config.get('width', 600)
-                base_height = roi_config.get('height', 400)
-                saved_zoom_x = roi_config.get('zoom_x', 1.0)
-                saved_zoom_y = roi_config.get('zoom_y', 1.0)
+                x = roi_config.get('x', 0)
+                y = roi_config.get('y', 0)
+                width = roi_config.get('width', 960)
+                height = roi_config.get('height', 540)
 
-                logger.info(f"  Base coords from config: x={base_x}, y={base_y}, w={base_width}, h={base_height}")
-                logger.info(f"  Base end point from config: x2={base_x + base_width}, y2={base_y + base_height}")
-                logger.info(f"  Saved zoom from config: X={saved_zoom_x:.6f}, Y={saved_zoom_y:.6f}")
+                logger.info(f"ROI LOAD: x={x}, y={y}, w={width}, h={height}")
 
-                # Get current preview dimensions
-                base_preview_width = self.preview_label.base_width if hasattr(self.preview_label, 'base_width') else 600
-                base_preview_height = self.preview_label.base_height if hasattr(self.preview_label, 'base_height') else 400
-                current_widget_width = self.preview_label.width()
-                current_widget_height = self.preview_label.height()
+                # Set ROI in preview label (directly, no conversion needed)
+                self.preview_label.set_roi_rect(x, y, width, height)
 
-                logger.info(f"  Base preview size: {base_preview_width}x{base_preview_height}")
-                logger.info(f"  Current widget size: {current_widget_width}x{current_widget_height}")
-
-                # Calculate current actual zoom from widget size
-                current_zoom_x = current_widget_width / base_preview_width if base_preview_width > 0 else 1.0
-                current_zoom_y = current_widget_height / base_preview_height if base_preview_height > 0 else 1.0
-
-                logger.info(f"  Calculated current zoom: X={current_zoom_x:.6f}, Y={current_zoom_y:.6f}")
-
-                # Ensure ROI stays within base preview bounds
-                base_x_clamped = max(0, min(base_x, base_preview_width - 1))
-                base_y_clamped = max(0, min(base_y, base_preview_height - 1))
-                base_width_clamped = min(base_width, base_preview_width - base_x_clamped)
-                base_height_clamped = min(base_height, base_preview_height - base_y_clamped)
-
-                if base_x != base_x_clamped or base_y != base_y_clamped or base_width != base_width_clamped or base_height != base_height_clamped:
-                    logger.info(f"  Base coords clamped to: x={base_x_clamped}, y={base_y_clamped}, w={base_width_clamped}, h={base_height_clamped}")
-                    base_x, base_y, base_width, base_height = base_x_clamped, base_y_clamped, base_width_clamped, base_height_clamped
-
-                # Convert base coordinates to current widget coordinates using current zoom
-                widget_x = int(base_x * current_zoom_x)
-                widget_y = int(base_y * current_zoom_y)
-                widget_width = int(base_width * current_zoom_x)
-                widget_height = int(base_height * current_zoom_y)
-
-                logger.info(f"  Widget ROI rect (restored): x={widget_x}, y={widget_y}, w={widget_width}, h={widget_height}")
-                logger.info(f"  Widget ROI end point (restored): x2={widget_x + widget_width}, y2={widget_y + widget_height}")
-
-                # Set ROI in preview label (in widget coordinates)
-                self.preview_label.set_roi_rect(widget_x, widget_y, widget_width, widget_height)
-                logger.info("  ROI SET IN PREVIEW LABEL")
-                logger.info("=" * 80)
-
-                # Scale ROI coordinates from display to camera resolution
-                preview_res_map = {
-                    'THE_1211x1013': (1211, 1013),
-                'THE_1250x1036': (1250, 1036),
-                    'THE_1080_P': (1920, 1080),
-                    'THE_720_P': (1280, 720),
-                    'THE_480_P': (640, 480),
-                    'THE_400_P': (640, 400),
-                    'THE_300_P': (640, 300)
-                }
-
-                # Get camera resolution
-                camera_res = getattr(self.camera_controller, 'preview_resolution', 'THE_1211x1013')
-                camera_width, camera_height = preview_res_map.get(camera_res, (1211, 1013))
-
-                # Get display widget size
-                display_width = self.preview_label.width()
-                display_height = self.preview_label.height()
-
-                # Scale to camera coordinates
-                scale_x = camera_width / display_width
-                scale_y = camera_height / display_height
-
-                camera_x1 = int(x * scale_x)
-                camera_y1 = int(y * scale_y)
-                camera_x2 = int((x + width) * scale_x)
-                camera_y2 = int((y + height) * scale_y)
+                # Scale ROI coordinates from display (960x540) to camera resolution (1920x1080)
+                # Fixed scaling: camera is 2x display size
+                camera_x1 = x * 2
+                camera_y1 = y * 2
+                camera_x2 = (x + width) * 2
+                camera_y2 = (y + height) * 2
 
                 # Set ROI in camera controller with scaled coordinates
                 self.camera_controller.set_roi((camera_x1, camera_y1), (camera_x2, camera_y2))
 
-                logger.info(f"Display ROI loaded: ({x}, {y}) to ({x + width}, {y + height})")
-                logger.info(f"Camera ROI loaded: ({camera_x1}, {camera_y1}) to ({camera_x2}, {camera_y2})")
+                logger.info(f"ROI LOAD: Display ({x}, {y}) to ({x + width}, {y + height})")
+                logger.info(f"ROI LOAD: Camera ({camera_x1}, {camera_y1}) to ({camera_x2}, {camera_y2})")
+                logger.info("=" * 80)
             else:
                 logger.info("Default ROI is disabled in config")
                 
@@ -1785,19 +1610,7 @@ class CameraTab(QWidget):
             self.iso_min_slider.setValue(camera_config.get('iso_min', 100))
             self.iso_max_slider.setValue(camera_config.get('iso_max', 800))
 
-            # Load preview resolution from config
-            saved_preview_res = camera_config.get('preview_resolution', 'THE_1211x1013')
-            logger.info(f"Loading saved preview resolution: {saved_preview_res}")
-
-            # Set the combo box to the saved value
-            for i in range(self.preview_resolution_combo.count()):
-                if self.preview_resolution_combo.itemData(i) == saved_preview_res:
-                    self.preview_resolution_combo.setCurrentIndex(i)
-                    logger.info(f"Set preview combo to index {i}: {self.preview_resolution_combo.itemText(i)}")
-                    break
-
-            # Also set it in the camera controller
-            self.camera_controller.preview_resolution = saved_preview_res
+            # Preview resolution is now fixed at THE_1080_P - no loading needed
 
             # Load motion detection settings
             motion_config = self.config.get('motion_detection', {})
@@ -1876,19 +1689,8 @@ class CameraTab(QWidget):
             if old_threshold != new_threshold:
                 changes.append(f"• Motion Threshold: {old_threshold} → {new_threshold}")
 
-            # Check preview resolution changes
-            new_preview_res = self.preview_resolution_combo.itemData(self.preview_resolution_combo.currentIndex())
-            old_preview_res = getattr(self.camera_controller, 'preview_resolution', 'THE_1211x1013')
+            # Preview resolution is now fixed at THE_1080_P - no changes possible
             preview_changed = False
-
-            logger.info(f"Preview resolution check - Old: {old_preview_res}, New: {new_preview_res}")
-
-            if old_preview_res != new_preview_res:
-                old_name = {'THE_1211x1013': '1211x1013', 'THE_1250x1036': '1250x1036', 'THE_1080_P': '1080p', 'THE_720_P': '720p', 'THE_480_P': '480p', 'THE_400_P': '400p', 'THE_300_P': '300p'}.get(old_preview_res, '1211x1013')
-                new_name = self.preview_resolution_combo.currentText()
-                changes.append(f"• Preview Resolution: {old_name} → {new_name}")
-                preview_changed = True
-                logger.info(f"Preview resolution will change from {old_name} to {new_name}")
 
             # Update config with current values
             self.config['camera']['focus'] = new_focus
@@ -1897,79 +1699,49 @@ class CameraTab(QWidget):
             self.config['camera']['brightness'] = new_brightness
             self.config['camera']['iso_min'] = new_iso_min
             self.config['camera']['iso_max'] = new_iso_max
-            self.config['camera']['preview_resolution'] = new_preview_res  # Save preview resolution to config
+            # Preview resolution is now fixed at THE_1080_P - no need to save
             self.config['motion_detection']['threshold'] = new_threshold
             
-            # Save current ROI settings if defined
+            # Save current ROI settings if defined (no zoom - fixed 960x540 preview)
             roi_changed = False
             if self.camera_controller.roi_defined:
                 roi_rect = self.preview_label.roi_rect
                 if not roi_rect.isEmpty():
-                    # Log BEFORE SAVE state
+                    # Save ROI coordinates directly (no conversion needed)
+                    x = roi_rect.x()
+                    y = roi_rect.y()
+                    width = roi_rect.width()
+                    height = roi_rect.height()
+
                     logger.info("=" * 80)
-                    logger.info("ROI SAVE TEST - BEFORE SAVE")
-                    logger.info(f"  Widget ROI rect: x={roi_rect.x()}, y={roi_rect.y()}, w={roi_rect.width()}, h={roi_rect.height()}")
-                    logger.info(f"  Widget ROI end point: x2={roi_rect.x() + roi_rect.width()}, y2={roi_rect.y() + roi_rect.height()}")
-
-                    # Calculate actual zoom from current widget size vs base size
-                    # (Don't use zoom_factor attribute - it doesn't account for layout resizing)
-                    base_preview_width = getattr(self.preview_label, 'base_width', 605)
-                    base_preview_height = getattr(self.preview_label, 'base_height', 506)
-                    current_widget_width = self.preview_label.width()
-                    current_widget_height = self.preview_label.height()
-
-                    logger.info(f"  Base preview size: {base_preview_width}x{base_preview_height}")
-                    logger.info(f"  Current widget size: {current_widget_width}x{current_widget_height}")
-
-                    actual_zoom_x = current_widget_width / base_preview_width if base_preview_width > 0 else 1.0
-                    actual_zoom_y = current_widget_height / base_preview_height if base_preview_height > 0 else 1.0
-                    # Use average zoom (or could use max)
-                    actual_zoom = (actual_zoom_x + actual_zoom_y) / 2.0
-
-                    logger.info(f"  Calculated zoom: X={actual_zoom_x:.6f}, Y={actual_zoom_y:.6f}, Avg={actual_zoom:.6f}")
-
-                    # Convert ROI to base coordinates using actual zoom
-                    base_x = int(roi_rect.x() / actual_zoom_x)
-                    base_y = int(roi_rect.y() / actual_zoom_y)
-                    base_width = int(roi_rect.width() / actual_zoom_x)
-                    base_height = int(roi_rect.height() / actual_zoom_y)
-
-                    logger.info(f"  Base coords (before clamping): x={base_x}, y={base_y}, w={base_width}, h={base_height}")
-
-                    base_x = max(0, min(base_x, base_preview_width - 1))
-                    base_y = max(0, min(base_y, base_preview_height - 1))
-                    base_width = min(base_width, base_preview_width - base_x)
-                    base_height = min(base_height, base_preview_height - base_y)
-
-                    logger.info(f"  Base coords (after clamping): x={base_x}, y={base_y}, w={base_width}, h={base_height}")
-                    logger.info(f"  Base end point: x2={base_x + base_width}, y2={base_y + base_height}")
+                    logger.info(f"ROI SAVE: x={x}, y={y}, w={width}, h={height} (preview: 960x540)")
+                    logger.info("=" * 80)
 
                     new_roi = {
-                        'x': base_x,
-                        'y': base_y,
-                        'width': base_width,
-                        'height': base_height,
-                        'zoom': actual_zoom,
-                        'zoom_x': actual_zoom_x,
-                        'zoom_y': actual_zoom_y
+                        'x': x,
+                        'y': y,
+                        'width': width,
+                        'height': height
                     }
                     old_roi = self.config['motion_detection'].get('current_roi', {})
                     if old_roi != new_roi:
-                        changes.append(f"• ROI: Updated to ({base_x}, {base_y}, {base_width}x{base_height}) [zoom: {actual_zoom:.2f}x ({actual_zoom_x:.2f}x{actual_zoom_y:.2f})]")
+                        changes.append(f"• ROI: Updated to ({x}, {y}, {width}x{height})")
                         roi_changed = True
 
                     self.config['motion_detection']['current_roi'] = new_roi
-                    logger.info(f"  SAVED TO CONFIG: {new_roi}")
-                    logger.info("=" * 80)
             
             # Save to file
             config_path = os.path.join(
                 os.path.dirname(__file__),
                 'config.json'
             )
+            save_start = time.time()
+            logger.info("[FILE-IO] Starting config save to config.json")
             with open(config_path, 'w') as f:
                 json.dump(self.config, f, indent=4)
-            
+            save_time = time.time() - save_start
+            logger.info(f"[FILE-IO] Config saved in {save_time:.3f}s")
+
             logger.info("Settings saved to config.json")
 
             # If preview resolution changed, restart camera with new settings
@@ -2254,9 +2026,15 @@ class CameraTab(QWidget):
 
 class ImageViewerDialog(QDialog):
     """Full-size image viewer dialog with keyboard navigation"""
-    
+
+    # Signal to update UI from background thread
+    email_finished = pyqtSignal(bool, str)
+
     def __init__(self, parent, current_image_path, all_image_paths):
         super().__init__(parent)
+
+        # Connect email signal
+        self.email_finished.connect(self._email_complete)
         self.current_image_path = str(current_image_path)
         self.all_image_paths = [str(p) for p in all_image_paths]
         self.current_index = self.all_image_paths.index(self.current_image_path)
@@ -2288,6 +2066,11 @@ class ImageViewerDialog(QDialog):
         self.prev_btn = QPushButton("← Previous")
         self.prev_btn.clicked.connect(self.show_previous)
         button_layout.addWidget(self.prev_btn)
+
+        # Email button
+        self.email_btn = QPushButton("📧 Send to Email")
+        self.email_btn.clicked.connect(self.send_to_email)
+        button_layout.addWidget(self.email_btn)
 
         # Close button
         close_btn = QPushButton("Close (Esc)")
@@ -2394,6 +2177,74 @@ class ImageViewerDialog(QDialog):
             self.current_image_path = self.all_image_paths[self.current_index]
             self.load_current_image()
 
+    def send_to_email(self):
+        """Send current image via email"""
+        try:
+            # Get the main window to access email handler
+            main_window = self.parent()
+            while main_window and not isinstance(main_window, QMainWindow):
+                main_window = main_window.parent()
+
+            if not main_window or not hasattr(main_window, 'email_handler'):
+                QMessageBox.warning(self, "Email Error", "Email handler not available")
+                return
+
+            email_handler = main_window.email_handler
+            if not email_handler or not email_handler.email_password:
+                QMessageBox.warning(self, "Email Error", "Email is not configured. Please configure email in the Configuration tab.")
+                return
+
+            # Get recipient from config
+            config = main_window.config
+            recipient = config.get('email', {}).get('receivers', {}).get('primary', '')
+            if not recipient:
+                QMessageBox.warning(self, "Email Error", "No email recipient configured")
+                return
+
+            # Disable button and show sending status
+            self.email_btn.setEnabled(False)
+            self.email_btn.setText("Sending...")
+            QApplication.processEvents()
+
+            # Get image filename for subject
+            filename = Path(self.current_image_path).name
+
+            # Send email in background thread
+            import threading
+            def send_email_thread():
+                try:
+                    success = email_handler.send_email_with_attachments(
+                        recipient=recipient,
+                        subject=f"Bird Photo: {filename}",
+                        body=f"Bird photo captured: {filename}\n\nSent from Bird Detection System",
+                        attachment_paths=[self.current_image_path]
+                    )
+                    # Emit signal to update UI from main thread
+                    self.email_finished.emit(success, "")
+                except Exception as e:
+                    logger.error(f"Error sending email: {e}")
+                    self.email_finished.emit(False, str(e))
+
+            thread = threading.Thread(target=send_email_thread, daemon=True)
+            thread.start()
+
+        except Exception as e:
+            logger.error(f"Error in send_to_email: {e}")
+            QMessageBox.critical(self, "Email Error", f"Failed to send email: {str(e)}")
+            self.email_btn.setEnabled(True)
+            self.email_btn.setText("📧 Send to Email")
+
+    def _email_complete(self, success, error_msg):
+        """Called when email send completes"""
+        self.email_btn.setEnabled(True)
+        if success:
+            self.email_btn.setText("✓ Sent!")
+            QTimer.singleShot(2000, lambda: self.email_btn.setText("📧 Send to Email"))
+        else:
+            self.email_btn.setText("📧 Send to Email")
+            error = error_msg or "Unknown error"
+            QMessageBox.warning(self, "Email Failed", f"Failed to send email: {error}")
+
 class GalleryLoader(QThread):
     """Background thread for loading gallery images"""
     progress = pyqtSignal(int, int, str)  # current, total, message
@@ -2488,8 +2339,8 @@ class GalleryTab(QWidget):
         self.loaded_dates = set()  # Track which dates have been loaded
         self.today_date = datetime.now().strftime('%Y-%m-%d')
         self.current_focus_index = -1  # Track currently focused item for arrow navigation
-        self.initial_batch_size = 30  # Images to load for the newest day
-        self.scroll_batch_size = 60   # Images to load per scroll batch
+        self.initial_batch_size = 200  # Images to load for the newest day
+        self.scroll_batch_size = 200   # Images to load per scroll batch
         self.scroll_trigger_percent = 80  # Threshold percentage to trigger lazy load
         self.setup_ui()
         
@@ -2928,35 +2779,55 @@ class GalleryTab(QWidget):
             # Get the batch to load based on offset and limit
             batch_images = sorted_images[offset:offset + limit]
             logger.info(f"Loading batch: {len(batch_images)} images from offset {offset}")
-            
+
             # Load new images with memory management
+            import time
+            batch_start_time = time.time()
             new_images = 0
-            
-            for image_path in batch_images:
-                    
+
+            logger.info(f"[GALLERY-LOAD] Starting batch load of {len(batch_images)} images")
+
+            for idx, image_path in enumerate(batch_images):
+
                 logger.debug(f"Processing image: {image_path}")
                 if str(image_path) not in existing_paths:
                     try:
                         # Load and add image with explicit memory management
+                        img_start = time.time()
                         pixmap = QPixmap(str(image_path))
+                        pixmap_time = time.time() - img_start
+
                         if not pixmap.isNull():
                             # Create smaller thumbnail to save memory
-                            scaled_pixmap = pixmap.scaled(150, 150, Qt.AspectRatioMode.KeepAspectRatio, 
+                            scale_start = time.time()
+                            scaled_pixmap = pixmap.scaled(150, 150, Qt.AspectRatioMode.KeepAspectRatio,
                                                         Qt.TransformationMode.FastTransformation)
-                            
+                            scale_time = time.time() - scale_start
+
                             # Explicitly delete the original large pixmap
                             del pixmap
-                            
+
+                            add_start = time.time()
                             self.add_image_to_gallery(date_str, image_path, scaled_pixmap)
+                            add_time = time.time() - add_start
+
                             self.loaded_image_paths[date_str].add(str(image_path))
                             new_images += 1
+
+                            total_img_time = time.time() - img_start
+                            if total_img_time > 0.1:  # Log slow image loads
+                                logger.warning(f"[GALLERY-LOAD] Slow image {idx}/{len(batch_images)}: {total_img_time:.3f}s (pixmap:{pixmap_time:.3f}s, scale:{scale_time:.3f}s, add:{add_time:.3f}s)")
+
                             logger.debug(f"Added image to gallery: {image_path}")
-                            
+
                             # Periodic garbage collection every 12 images
                             if new_images % 12 == 0:
+                                gc_start = time.time()
                                 import gc
                                 gc.collect()
                                 QApplication.processEvents()  # Keep UI responsive
+                                gc_time = time.time() - gc_start
+                                logger.info(f"[GALLERY-LOAD] Progress: {new_images}/{len(batch_images)} loaded, GC+processEvents took {gc_time:.3f}s")
                         else:
                             logger.warning(f"Failed to load pixmap for: {image_path}")
                     except Exception as e:
@@ -2964,8 +2835,10 @@ class GalleryTab(QWidget):
                 else:
                     logger.debug(f"Image already loaded: {image_path}")
             
+            batch_total_time = time.time() - batch_start_time
+            logger.info(f"[GALLERY-LOAD] Batch complete: {new_images} images loaded in {batch_total_time:.3f}s ({batch_total_time/max(1, new_images):.3f}s per image)")
             logger.info(f"Added {new_images} new images for date {date_str}")
-            
+
             # Update status
             total_images = sum(len(images) for images in self.images_by_date.values())
             self.status_label.setText(f"{total_images} images from {len(self.images_by_date)} days")
@@ -6127,17 +6000,11 @@ class MainWindow(QMainWindow):
             os._exit(0)
     
     def resizeEvent(self, event):
-        """Handle window resize events to scale camera preview"""
+        """Handle window resize events"""
         super().resizeEvent(event)
-        
-        # Check if we have a camera preview and scale it based on window size
-        if hasattr(self, 'camera_tab') and hasattr(self.camera_tab, 'preview_label'):
-            # Consider the window "fullscreen-like" if it's significantly larger than default
-            current_size = event.size()
-            is_large = current_size.width() > 1200 or current_size.height() > 900
-            
-            self.camera_tab.preview_label.scale_for_fullscreen(is_large)
-            logger.debug(f"Window resized to {current_size.width()}x{current_size.height()}, large: {is_large}")
+
+        # Preview is now fixed size - no scaling on window resize
+        logger.debug(f"Window resized to {event.size().width()}x{event.size().height()}")
     
     def cleanup_application(self):
         """Comprehensive cleanup of all resources"""

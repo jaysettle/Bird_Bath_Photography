@@ -2,6 +2,7 @@
 """
 Mobile Web Interface for Bird Detection System
 Optimized for iPhone 16 (2556 x 1179 px)
+With WebSocket support for real-time updates
 """
 
 import os
@@ -12,15 +13,51 @@ import psutil
 import subprocess
 from datetime import datetime
 from pathlib import Path
-from flask import Flask, render_template, jsonify, send_file, request
+from flask import Flask, render_template, jsonify, send_file, request, Response
+from functools import wraps
 from flask_cors import CORS
+from flask_socketio import SocketIO, emit
 import logging
+from threading import Thread
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
 
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 app = Flask(__name__)
 CORS(app)
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
+
+# ============================================
+# Authentication for public-facing pages
+# ============================================
+# Change these credentials!
+GALLERY_USERNAME = 'birds'
+GALLERY_PASSWORD = 'birdwatcher'
+
+def check_auth(username, password):
+    """Check if username/password combination is valid"""
+    return username == GALLERY_USERNAME and password == GALLERY_PASSWORD
+
+def authenticate():
+    """Send 401 response that enables basic auth"""
+    return Response(
+        'Authentication required to view the bird gallery. Please provide valid credentials.',
+        401,
+        {'WWW-Authenticate': 'Basic realm="Bird Gallery"'}
+    )
+
+def requires_auth(f):
+    """Decorator to require authentication for a route"""
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        auth = request.authorization
+        if not auth or not check_auth(auth.username, auth.password):
+            return authenticate()
+        return f(*args, **kwargs)
+    return decorated
+# ============================================
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -30,6 +67,7 @@ logger = logging.getLogger(__name__)
 BASE_DIR = Path(__file__).parent.parent
 CONFIG_PATH = BASE_DIR / "config.json"
 LOGS_DIR = BASE_DIR / "logs"
+SPECIES_DB_PATH = BASE_DIR / "species_database.json"
 
 def load_config():
     """Load configuration"""
@@ -46,6 +84,42 @@ def get_images_dir():
 
 IMAGES_DIR = get_images_dir()
 UPLOAD_LOG = IMAGES_DIR / "drive_uploads.json"
+
+# Species lookup cache
+_species_cache = {}
+_species_cache_time = 0
+
+def load_species_database():
+    """Load and cache species database"""
+    global _species_cache, _species_cache_time
+    
+    try:
+        if SPECIES_DB_PATH.exists():
+            mtime = SPECIES_DB_PATH.stat().st_mtime
+            if mtime > _species_cache_time:
+                with open(SPECIES_DB_PATH, 'r') as f:
+                    data = json.load(f)
+                    _species_cache = {}
+                    # Build reverse lookup: photo path -> species info
+                    for sci_name, species_info in data.get('species', {}).items():
+                        common_name = species_info.get('common_name', 'Unknown')
+                        for photo_path in species_info.get('photo_gallery', []):
+                            photo_name = Path(photo_path).name
+                            _species_cache[photo_name] = {
+                                'common_name': common_name,
+                                'scientific_name': sci_name
+                            }
+                    _species_cache_time = mtime
+                    logger.info(f"Loaded species database with {len(_species_cache)} photo mappings")
+    except Exception as e:
+        logger.error(f"Error loading species database: {e}")
+    
+    return _species_cache
+
+def get_species_for_photo(filename):
+    """Look up species info for a photo filename"""
+    cache = load_species_database()
+    return cache.get(filename, None)
 
 def get_all_image_files():
     """Get all image files from root and date folders"""
@@ -69,12 +143,14 @@ def get_recent_images(limit=20):
     for img in jpeg_files:
         # Get relative path from IMAGES_DIR for display
         rel_path = img.relative_to(IMAGES_DIR)
+        species_info = get_species_for_photo(img.name)
         images.append({
             'filename': img.name,
             'path': str(img),
             'rel_path': str(rel_path),
             'timestamp': datetime.fromtimestamp(img.stat().st_mtime).isoformat(),
-            'size': img.stat().st_size
+            'size': img.stat().st_size,
+            'species': species_info
         })
     return images
 
@@ -191,7 +267,59 @@ def is_watchdog_service_active():
         logger.error(f"Error checking watchdog service: {e}")
         return False
 
+
+# WebSocket file watcher
+class PhotoWatcher(FileSystemEventHandler):
+    """Watch for new photos and notify connected clients"""
+    
+    def on_created(self, event):
+        if event.is_directory:
+            return
+        
+        if event.src_path.endswith('.jpeg') or event.src_path.endswith('.jpg'):
+            # Wait a moment for file to be fully written
+            time.sleep(0.5)
+            
+            try:
+                photo_path = Path(event.src_path)
+                if not photo_path.exists():
+                    return
+                    
+                rel_path = photo_path.relative_to(IMAGES_DIR)
+                species_info = get_species_for_photo(photo_path.name)
+                
+                photo_data = {
+                    'filename': photo_path.name,
+                    'rel_path': str(rel_path),
+                    'timestamp': datetime.fromtimestamp(photo_path.stat().st_mtime).isoformat(),
+                    'size': photo_path.stat().st_size,
+                    'species': species_info
+                }
+                
+                logger.info(f"New photo detected: {photo_path.name}")
+                socketio.emit('new_photo', photo_data)
+                
+            except Exception as e:
+                logger.error(f"Error processing new photo: {e}")
+
+
+# Start file watcher
+def start_photo_watcher():
+    """Start watching for new photos"""
+    try:
+        event_handler = PhotoWatcher()
+        observer = Observer()
+        observer.schedule(event_handler, str(IMAGES_DIR), recursive=True)
+        observer.start()
+        logger.info(f"Started watching {IMAGES_DIR} for new photos")
+        return observer
+    except Exception as e:
+        logger.error(f"Error starting photo watcher: {e}")
+        return None
+
+
 @app.route('/')
+@requires_auth
 def index():
     """Main page"""
     return render_template('index.html')
@@ -221,6 +349,7 @@ def api_images():
 
 
 @app.route('/api/gallery')
+@requires_auth
 def api_gallery():
     """Paginated gallery view grouped by date."""
     try:
@@ -260,11 +389,13 @@ def api_gallery():
         def to_payload(image_path: Path):
             rel_path = image_path.relative_to(IMAGES_DIR)
             stat = image_path.stat()
+            species_info = get_species_for_photo(image_path.name)
             return {
                 'filename': image_path.name,
                 'rel_path': str(rel_path),
                 'timestamp': datetime.fromtimestamp(stat.st_mtime).isoformat(),
-                'size': stat.st_size
+                'size': stat.st_size,
+                'species': species_info
             }
 
         images_payload = [to_payload(path) for path in paginated]
@@ -307,11 +438,18 @@ def api_gallery():
         }), 500
 
 @app.route('/api/image/<path:image_path>')
+@requires_auth
 def api_image(image_path):
     """Serve an image (handles both root and date folder paths)"""
-    # First try direct path
-    filepath = IMAGES_DIR / image_path
-    if filepath.exists() and filepath.suffix in ['.jpeg', '.jpg']:
+    # Validate path to prevent directory traversal
+    try:
+        filepath = (IMAGES_DIR / image_path).resolve()
+        if not filepath.is_relative_to(IMAGES_DIR.resolve()):
+            return jsonify({'error': 'Invalid path'}), 403
+    except Exception:
+        return jsonify({'error': 'Invalid path'}), 403
+    
+    if filepath.exists() and filepath.suffix.lower() in ['.jpeg', '.jpg']:
         return send_file(filepath, mimetype='image/jpeg')
     
     # If not found and no date folder in path, search date folders
@@ -320,7 +458,7 @@ def api_image(image_path):
         for date_folder in IMAGES_DIR.iterdir():
             if date_folder.is_dir() and len(date_folder.name) == 10 and date_folder.name[4] == '-' and date_folder.name[7] == '-':
                 date_filepath = date_folder / image_path
-                if date_filepath.exists() and date_filepath.suffix in ['.jpeg', '.jpg']:
+                if date_filepath.exists() and date_filepath.suffix.lower() in ['.jpeg', '.jpg']:
                     return send_file(date_filepath, mimetype='image/jpeg')
     
     return jsonify({'error': 'Image not found'}), 404
@@ -658,7 +796,64 @@ def find_available_port(start_port=8080, max_attempts=10):
             continue
     return None
 
+
+@app.route('/debug')
+@requires_auth
+def debug_gallery():
+    return render_template('debug.html')
+
+@app.route('/live')
+@requires_auth
+def live_gallery():
+    """Live gallery page with auto-refresh"""
+    return render_template('live_gallery.html')
+
+@app.route('/api/latest')
+@requires_auth
+def api_latest():
+    """Get the single most recent photo - for polling"""
+    try:
+        jpeg_files = get_all_image_files()
+        if jpeg_files:
+            latest = jpeg_files[0]
+            rel_path = latest.relative_to(IMAGES_DIR)
+            species_info = get_species_for_photo(latest.name)
+            return jsonify({
+                'success': True,
+                'photo': {
+                    'filename': latest.name,
+                    'rel_path': str(rel_path),
+                    'timestamp': datetime.fromtimestamp(latest.stat().st_mtime).isoformat(),
+                    'species': species_info
+                }
+            })
+        return jsonify({'success': True, 'photo': None})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# WebSocket events
+@socketio.on('connect')
+def handle_connect():
+    """Handle client connection"""
+    logger.info('Client connected')
+    emit('status', {'connected': True, 'message': 'Connected to bird gallery'})
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    """Handle client disconnection"""
+    logger.info('Client disconnected')
+
+
 if __name__ == '__main__':
+    # Start the photo watcher
+    try:
+        from watchdog.observers import Observer
+        observer = start_photo_watcher()
+    except ImportError:
+        logger.warning("watchdog not installed, file watching disabled")
+        observer = None
+    
     # Find available port
     port = find_available_port(8080)
     if port is None:
@@ -666,5 +861,5 @@ if __name__ == '__main__':
         sys.exit(1)
     
     print(f"Starting server on port {port}")
-    # Run on all interfaces so it's accessible from iPhone
-    app.run(host='0.0.0.0', port=port, debug=False)
+    # Run with SocketIO
+    socketio.run(app, host='0.0.0.0', port=port, debug=False, allow_unsafe_werkzeug=True)
