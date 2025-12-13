@@ -7,6 +7,245 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <title>Bird Detection Control</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+
+    <style>
+        /* Gallery Controls */
+        .load-label {
+            display: flex;
+            align-items: center;
+            gap: 0.3rem;
+            color: #aaa;
+            font-size: 0.8rem;
+        }
+        .load-label select {
+            background-color: #333;
+            color: #fff;
+            border: 1px solid #555;
+            border-radius: 4px;
+            padding: 0.3rem 0.5rem;
+            font-size: 0.85rem;
+            cursor: pointer;
+        }
+        .action-btn-small {
+            background-color: #333;
+            color: #fff;
+            border: 1px solid #555;
+            border-radius: 4px;
+            padding: 0.3rem 0.6rem;
+            font-size: 0.8rem;
+            cursor: pointer;
+        }
+        .action-btn-small:hover {
+            background-color: #444;
+        }
+
+        /* Calendar - Compact */
+        .calendar-section {
+            background-color: var(--bg-card);
+            border-radius: 8px;
+            padding: 0.5rem;
+            margin: 0.5rem 1rem;
+            border: 1px solid var(--border);
+            max-width: 320px;
+        }
+        .calendar-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 0.4rem;
+        }
+        .calendar-header span {
+            font-weight: 600;
+            font-size: 0.85rem;
+        }
+        .cal-nav {
+            background: #333;
+            color: #fff;
+            border: none;
+            border-radius: 3px;
+            padding: 0.2rem 0.5rem;
+            cursor: pointer;
+            font-size: 0.85rem;
+        }
+        .cal-nav:hover {
+            background: #444;
+        }
+        .calendar-grid {
+            display: grid;
+            grid-template-columns: repeat(7, 1fr);
+            gap: 1px;
+        }
+        .cal-day-header {
+            text-align: center;
+            font-size: 0.6rem;
+            color: #888;
+            padding: 0.15rem;
+        }
+        .cal-day {
+            aspect-ratio: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.7rem;
+            border-radius: 3px;
+            cursor: pointer;
+            background: #222;
+            position: relative;
+            min-height: 28px;
+        }
+        .cal-day:hover {
+            background: #333;
+        }
+        .cal-day.empty {
+            background: transparent;
+            cursor: default;
+        }
+        .cal-day.has-photos {
+            background: #1a472a;
+        }
+        .cal-day.has-photos:hover {
+            background: #236b3a;
+        }
+        .cal-day.today {
+            border: 1px solid #4CAF50;
+        }
+        .cal-day .day-num {
+            font-weight: 500;
+        }
+        .cal-day .bird-count {
+            font-size: 0.5rem;
+            color: #4CAF50;
+            margin-top: 0px;
+        }
+
+        /* Collapsible Days */
+        .gallery-day {
+            margin-bottom: 1rem;
+        }
+        .gallery-day h3 {
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem;
+            background: #1a1a1a;
+            border-radius: 6px;
+            margin-bottom: 0.5rem;
+            user-select: none;
+        }
+        .gallery-day h3:hover {
+            background: #252525;
+        }
+        .gallery-day h3 .collapse-icon {
+            transition: transform 0.2s;
+        }
+        .gallery-day.collapsed h3 .collapse-icon {
+            transform: rotate(-90deg);
+        }
+        .gallery-day.collapsed .gallery-day-grid {
+            display: none;
+        }
+        .gallery-day .day-photo-count {
+            color: #888;
+            font-size: 0.8rem;
+            font-weight: normal;
+            margin-left: auto;
+        }
+        /* Hamburger Menu */
+        .hamburger-btn {
+            background: transparent;
+            border: none;
+            color: var(--text-primary);
+            cursor: pointer;
+            padding: 0.5rem;
+            border-radius: 6px;
+        }
+        .hamburger-btn:hover {
+            background: #333;
+        }
+        .settings-dropdown {
+            position: absolute;
+            top: 60px;
+            right: 1rem;
+            background: #1a1a1a;
+            border: 1px solid #333;
+            border-radius: 8px;
+            min-width: 220px;
+            z-index: 1000;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+        }
+        .settings-dropdown.hidden {
+            display: none;
+        }
+        .settings-header {
+            padding: 0.75rem 1rem;
+            font-weight: 600;
+            border-bottom: 1px solid #333;
+            color: #888;
+            font-size: 0.8rem;
+            text-transform: uppercase;
+        }
+        .settings-item {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            padding: 0.75rem 1rem;
+            width: 100%;
+            border: none;
+            background: transparent;
+            color: var(--text-primary);
+            cursor: pointer;
+            text-align: left;
+            font-size: 0.9rem;
+        }
+        .settings-item:hover {
+            background: #252525;
+        }
+        .settings-item.danger {
+            color: #f44336;
+        }
+        .settings-item.danger:hover {
+            background: rgba(244, 67, 54, 0.1);
+        }
+        .settings-item.info {
+            color: #888;
+            cursor: default;
+            font-size: 0.8rem;
+        }
+        .settings-item.info:hover {
+            background: transparent;
+        }
+        .settings-divider {
+            height: 1px;
+            background: #333;
+            margin: 0.5rem 0;
+        }
+
+        /* Updated header */
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1rem;
+            position: relative;
+        }
+        .header-left {
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+        }
+        .header-left h1 {
+            margin: 0;
+            font-size: 1.25rem;
+        }
+
+        /* Tab link styling */
+        .tab-link {
+            text-decoration: none;
+            color: inherit;
+        }
+    </style>
 </head>
 <body>
     <div class="container">
@@ -14,38 +253,63 @@
         <header>
             <div class="header-left">
                 <h1>Bird Detection</h1>
-                <div class="timestamp" id="current-time">00:00:00</div>
+                <div class="status-indicator" id="app-status">
+                    <span class="status-dot"></span>
+                    <span class="status-text">Checking...</span>
+                </div>
             </div>
-            <div class="status-indicator" id="app-status">
-                <span class="status-dot"></span>
-                <span class="status-text">Checking...</span>
-            </div>
+            <button id="hamburger-btn" class="hamburger-btn" title="Settings">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="3" y1="6" x2="21" y2="6"></line>
+                    <line x1="3" y1="12" x2="21" y2="12"></line>
+                    <line x1="3" y1="18" x2="21" y2="18"></line>
+                </svg>
+            </button>
         </header>
+
+        <!-- Settings Dropdown -->
+        <div id="settings-dropdown" class="settings-dropdown hidden">
+            <div class="settings-header">Settings</div>
+            <button id="restart-app-menu" class="settings-item danger">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+                </svg>
+                Restart App
+            </button>
+            <button id="clear-cache-menu" class="settings-item">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="3 6 5 6 21 6"></polyline>
+                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                </svg>
+                Clear Thumbnail Cache
+            </button>
+            <button id="toggle-notifications-menu" class="settings-item">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>
+                    <path d="M13.73 21a2 2 0 0 1-3.46 0"></path>
+                </svg>
+                <span id="notifications-label">Enable Notifications</span>
+            </button>
+            <div class="settings-divider"></div>
+            <div class="settings-item info">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <line x1="12" y1="16" x2="12" y2="12"></line>
+                    <line x1="12" y1="8" x2="12.01" y2="8"></line>
+                </svg>
+                <span id="app-version">Version 1.0</span>
+            </div>
+        </div>
 
         <!-- Tab Navigation -->
         <nav class="tabs">
-            <button class="tab-btn active" data-tab="dashboard">Dashboard</button>
-            <button class="tab-btn" data-tab="gallery">Gallery</button>
+            <a href="/#dashboard" class="tab-btn active" data-tab="dashboard" onclick="document.getElementById('gallery-tab').style.display='none'; document.getElementById('dashboard-tab').style.display='block'; document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active')); this.classList.add('active'); return false;">Dashboard</a>
+            <a href="/#gallery" class="tab-btn" onclick="document.getElementById('dashboard-tab').style.display='none'; document.getElementById('gallery-tab').style.display='block'; document.querySelector('[data-tab=dashboard]').classList.remove('active'); this.classList.add('active'); if(typeof ensureGalleryInitialized==='function')ensureGalleryInitialized(); return false;">Gallery</a>
+            <a href="/species" class="tab-btn">Species</a>
         </nav>
 
         <!-- Dashboard Tab -->
         <div id="dashboard-tab" class="tab-content active">
-            <!-- Quick Actions -->
-            <section class="actions" style="display: flex; gap: 0.75rem;">
-                <button id="restart-btn" class="action-btn danger" style="flex: 1;">
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                        <path d="M23 4v6h-6M1 20v-6h6M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
-                    </svg>
-                    Restart App
-                </button>
-                <a href="/species" class="action-btn primary" style="flex: 1; text-decoration: none; display: flex; align-items: center; justify-content: center; gap: 0.5rem;">
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                        <path d="M12 3C7.03 3 3 7.03 3 12s4.03 9 9 9c.83 0 1.5-.67 1.5-1.5 0-.39-.15-.74-.39-1.01-.23-.26-.38-.61-.38-.99 0-.83.67-1.5 1.5-1.5H16c2.76 0 5-2.24 5-5 0-4.42-4.03-8-9-8zm-5.5 9c-.83 0-1.5-.67-1.5-1.5S5.67 9 6.5 9 8 9.67 8 10.5 7.33 12 6.5 12zm3-4C8.67 8 8 7.33 8 6.5S8.67 5 9.5 5s1.5.67 1.5 1.5S10.33 8 9.5 8zm5 0c-.83 0-1.5-.67-1.5-1.5S13.67 5 14.5 5s1.5.67 1.5 1.5S15.33 8 14.5 8zm3 4c-.83 0-1.5-.67-1.5-1.5S16.67 9 17.5 9s1.5.67 1.5 1.5-.67 1.5-1.5 1.5z"/>
-                    </svg>
-                    Species Gallery
-                </a>
-            </section>
-
             <!-- Stats Cards -->
             <section class="stats">
                 <div class="stat-card">
@@ -124,11 +388,34 @@
 
         <!-- Gallery Tab -->
         <div id="gallery-tab" class="tab-content">
+            <!-- Calendar Section -->
+            <section class="calendar-section">
+                <div class="calendar-header">
+                    <button id="cal-prev" class="cal-nav">&lt;</button>
+                    <span id="cal-month-year">December 2025</span>
+                    <button id="cal-next" class="cal-nav">&gt;</button>
+                </div>
+                <div class="calendar-grid" id="calendar-grid">
+                    <!-- Calendar will be rendered here -->
+                </div>
+            </section>
+
             <section class="images-section">
                 <div class="section-header">
                     <h2>Full Gallery</h2>
                     <div class="gallery-actions">
                         <span id="gallery-count" class="gallery-count">0 photos</span>
+                        <label class="load-label">Load:
+                            <select id="gallery-load-select">
+                                <option value="60">60</option>
+                                <option value="120">120</option>
+                                <option value="240">240</option>
+                                <option value="480">480</option>
+                            </select>
+                        </label>
+                        <button id="collapse-all-btn" class="action-btn-small" title="Collapse/Expand All">
+                            ▼ All
+                        </button>
                         <button id="gallery-refresh-btn" class="refresh-btn" title="Refresh Gallery">
                             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <polyline points="1 4 1 10 7 10"></polyline>
@@ -138,7 +425,6 @@
                         </button>
                     </div>
                 </div>
-                <p class="gallery-tip">Latest 60 captures from BirdPhotos. Tap any photo for details.</p>
                 <div id="gallery-empty" class="empty-state">Loading gallery...</div>
                 <div id="gallery-grid" class="gallery-collection"></div>
             </section>
@@ -149,7 +435,7 @@
     <!-- Image Viewer Modal -->
     <div id="image-modal" class="modal">
         <div class="modal-content">
-            <span class="close">&times;</span>
+            <span class="close" onclick="document.getElementById('image-modal').style.display='none';" style="cursor:pointer; z-index:1001;">&times;</span>
             <img id="modal-image" src="" alt="Bird capture">
             <p id="modal-caption"></p>
         </div>
