@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 """Camera control and preview tab"""
 
+import os
+import json
 from datetime import datetime
 import time
 from pathlib import Path
+
+# Get app root directory (two levels up from this file)
+APP_ROOT = Path(__file__).parent.parent.parent
+CONFIG_PATH = APP_ROOT / 'config.json'
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
                             QGroupBox, QLabel, QSlider, QPushButton, QCheckBox,
                             QComboBox, QSpinBox, QMessageBox, QApplication, QToolTip)
@@ -748,9 +754,7 @@ class CameraTab(QWidget):
 
         # Save config to file
         try:
-            import json
-            config_path = os.path.join(os.path.dirname(__file__), 'config.json')
-            with open(config_path, 'w') as f:
+            with open(CONFIG_PATH, 'w') as f:
                 json.dump(self.config, f, indent=2)
             logger.info(f"Config updated with new resolution: {config_value}")
         except Exception as e:
@@ -980,11 +984,8 @@ class CameraTab(QWidget):
     def load_default_roi(self):
         """Load ROI from config and scale to current preview size"""
         try:
-            config_path = os.path.join(os.path.dirname(__file__), 'config.json')
-            with open(config_path, 'r') as f:
-                config = json.load(f)
-            
-            motion_config = config.get('motion_detection', {})
+            # Use self.config instead of loading from file
+            motion_config = self.config.get('motion_detection', {})
             
             # First try to load current_roi (user-drawn ROI)
             roi_config = motion_config.get('current_roi', {})
@@ -1210,13 +1211,9 @@ class CameraTab(QWidget):
                     self.config['motion_detection']['current_roi'] = new_roi
             
             # Save to file
-            config_path = os.path.join(
-                os.path.dirname(__file__),
-                'config.json'
-            )
             save_start = time.time()
             logger.info("[FILE-IO] Starting config save to config.json")
-            with open(config_path, 'w') as f:
+            with open(CONFIG_PATH, 'w') as f:
                 json.dump(self.config, f, indent=4)
             save_time = time.time() - save_start
             logger.info(f"[FILE-IO] Config saved in {save_time:.3f}s")
@@ -1379,61 +1376,49 @@ class CameraTab(QWidget):
             QMessageBox.critical(self, "Save Failed", f"Failed to save settings:\n{str(e)}")
 
     def show_save_notification(self, message, changes_count, preview_changed):
-        """Show a visual save confirmation notification in the UI"""
+        """Show a visual save confirmation by changing save button to green"""
         try:
-            logger.info(f"Creating save notification UI - Changes: {changes_count}, Preview changed: {preview_changed}")
+            logger.info(f"Save notification - Changes: {changes_count}, Preview changed: {preview_changed}")
 
-            # Create or update notification label if it doesn't exist
-            if not hasattr(self, 'notification_label'):
-                # Create a notification area at the top of the camera tab
-                self.notification_label = QLabel()
-                self.notification_label.setWordWrap(True)
-                self.notification_label.setStyleSheet("""
-                    QLabel {
-                        background-color: #4CAF50;
-                        color: white;
-                        padding: 10px;
-                        border-radius: 5px;
-                        font-weight: bold;
-                        font-size: 12px;
-                    }
-                """)
-                self.notification_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-                self.notification_label.hide()  # Initially hidden
+            # Change save button to green with checkmark
+            self.save_settings_btn.setText("✓ Saved")
+            self.save_settings_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #4CAF50;
+                    color: white;
+                    font-weight: bold;
+                    border: none;
+                    border-radius: 4px;
+                    padding: 5px 15px;
+                }
+            """)
+            logger.info(f"Save button turned green - {changes_count} changes saved")
 
-                # Insert at the top of the main layout
-                main_layout = self.layout()
-                if main_layout:
-                    main_layout.insertWidget(0, self.notification_label)
-                    logger.info("Added notification label to camera tab layout")
-
-            # Set the message
-            self.notification_label.setText(message)
-            self.notification_label.show()
-            logger.info("Showing save notification with message")
-
-            # Use a timer to auto-hide the notification after 5 seconds
-            if hasattr(self, 'notification_timer'):
-                self.notification_timer.stop()
+            # Use a timer to reset button after 3 seconds
+            if hasattr(self, 'save_btn_timer'):
+                self.save_btn_timer.stop()
             else:
-                self.notification_timer = QTimer()
-                self.notification_timer.setSingleShot(True)
-                self.notification_timer.timeout.connect(self.hide_save_notification)
+                self.save_btn_timer = QTimer()
+                self.save_btn_timer.setSingleShot(True)
+                self.save_btn_timer.timeout.connect(self.reset_save_button)
 
-            self.notification_timer.start(5000)  # Hide after 5 seconds
-            logger.info("Save notification displayed successfully")
+            self.save_btn_timer.start(3000)  # Reset after 3 seconds
 
         except Exception as e:
             logger.error(f"Failed to show save notification: {e}")
 
-    def hide_save_notification(self):
-        """Hide the save notification"""
+    def reset_save_button(self):
+        """Reset save button to original state"""
         try:
-            if hasattr(self, 'notification_label'):
-                self.notification_label.hide()
-                logger.info("Save notification hidden")
+            self.save_settings_btn.setText("Save")
+            self.save_settings_btn.setStyleSheet("")  # Reset to default style
+            logger.info("Save button reset to original state")
         except Exception as e:
-            logger.error(f"Failed to hide save notification: {e}")
+            logger.error(f"Failed to reset save button: {e}")
+
+    def hide_save_notification(self):
+        """Hide the save notification (legacy method)"""
+        pass  # No longer used
 
     def on_camera_disconnected(self):
         """Handle camera disconnection"""

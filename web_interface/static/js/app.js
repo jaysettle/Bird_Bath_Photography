@@ -13,7 +13,7 @@ const GALLERY_SCROLL_THRESHOLD = 250; // px from bottom to fetch more
 // State
 let isRestarting = false;
 let autoScroll = true;
-window.currentTab = 'dashboard';
+window.currentTab = 'gallery';
 console.log('[INIT] window.currentTab initialized to:', window.currentTab);
 let autoRefreshPreview = true;
 let previewInterval = null;
@@ -59,6 +59,11 @@ document.addEventListener('DOMContentLoaded', () => {
     loadImages();
     loadLogs();
     loadCameraSettings();
+    
+    // Initialize gallery as default tab
+    if(typeof ensureGalleryInitialized==="function") ensureGalleryInitialized();
+    if(typeof loadCalendar==="function") loadCalendar();
+    if(typeof startScrollCheck==="function") startScrollCheck();
     
     // Set up auto-refresh (but not for images)
     setInterval(loadStats, STATS_REFRESH);
@@ -522,7 +527,18 @@ function updateAppStatus(isRunning) {
 // Open image in modal (for non-gallery images like Recent Captures)
 function openImage(imagePath, timestamp) {
     elements.modal.style.display = 'block';
-    elements.modalImg.src = `/api/image/${imagePath}`;
+    
+    // Show loading indicator
+    const loadingEl = document.getElementById('modal-loading');
+    if (loadingEl) loadingEl.classList.add('visible');
+    elements.modalImg.style.opacity = '0.3';
+    
+    // Hide loading when image loads
+    elements.modalImg.onload = function() {
+        if (loadingEl) loadingEl.classList.remove('visible');
+        elements.modalImg.style.opacity = '1';
+    };
+    elements.modalImg.src = `/api/image-resized/${imagePath}`;
     elements.modalCaption.innerHTML = `Captured: ${formatTime(timestamp)}`;
     // Hide nav buttons for non-gallery images
     hideModalNav();
@@ -536,22 +552,59 @@ function openGalleryImage(index) {
     const img = galleryState.allImages[index];
 
     elements.modal.style.display = 'block';
-    elements.modalImg.src = `/api/image/${img.path}`;
+    
+    // Show loading indicator
+    const loadingEl = document.getElementById('modal-loading');
+    if (loadingEl) loadingEl.classList.add('visible');
+    elements.modalImg.style.opacity = '0.3';
+    
+    // Hide loading when image loads
+    elements.modalImg.onload = function() {
+        if (loadingEl) loadingEl.classList.remove('visible');
+        elements.modalImg.style.opacity = '1';
+    };
+    elements.modalImg.src = `/api/image-resized/${img.path}`;
     updateModalCaption(img);
     showModalNav();
     updateNavButtons();
 }
 
 // Update modal caption with image info and email button
-function updateModalCaption(img) {
-    const emailBtn = `<button class="modal-email-btn" onclick="emailCurrentImage()">📧 Email</button>`;
+
+// Update modal caption with image info, metadata, and email button
+async function updateModalCaption(img) {
+    const emailBtn = `<button class="modal-email-btn" onclick="shareFullImage()">📧 Email Full Size</button>`;
+    
+    // Show loading state first
     elements.modalCaption.innerHTML = `
         <div class="modal-info">
             <span>Captured: ${formatTime(img.timestamp)}</span>
+            <span class="metadata-loading">Loading metadata...</span>
             ${emailBtn}
         </div>
     `;
+    
+    // Fetch metadata
+    try {
+        const response = await fetch(`/api/image-metadata/${img.path}`, {
+            headers: { "Authorization": "Basic " + btoa("birds:birdwatcher") }
+        });
+        if (response.ok) {
+            const meta = await response.json();
+            elements.modalCaption.innerHTML = `
+                <div class="modal-info">
+                    <span>Captured: ${formatTime(img.timestamp)}</span>
+                    <span class="metadata">Original: ${meta.original_width}x${meta.original_height} (${meta.file_size_mb}MB)</span>
+                    <span class="metadata">Showing: ${meta.display_width}x${meta.display_height}</span>
+                    ${emailBtn}
+                </div>
+            `;
+        }
+    } catch (e) {
+        console.log("Could not fetch metadata:", e);
+    }
 }
+
 
 // Show navigation buttons
 function showModalNav() {
@@ -629,6 +682,29 @@ async function emailCurrentImage() {
             emailBtn.disabled = false;
         }
     }
+}
+async function shareFullImage() {
+    const img = galleryState.allImages[galleryState.currentIndex];
+    if (!img) return;
+    const btn = document.querySelector('.modal-email-btn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Loading...'; }
+    try {
+        const response = await fetch('/api/image/' + img.path);
+        const blob = await response.blob();
+        const filename = img.path.split('/').pop() || 'bird_photo.jpg';
+        const file = new File([blob], filename, { type: blob.type });
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+            await navigator.share({ files: [file], title: 'Bird Photo', text: 'Check out this bird photo!' });
+        } else {
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = filename;
+            a.click();
+            URL.revokeObjectURL(a.href);
+            alert('Image downloaded. Please attach it to your email manually.');
+        }
+    } catch (err) { if (err.name !== 'AbortError') console.error('Share failed:', err); }
+    if (btn) { btn.disabled = false; btn.textContent = '📧 Email Full Size'; }
 }
 
 // Close modal
@@ -715,6 +791,11 @@ function switchTab(tabName) {
     // Load camera settings when switching to camera tab
     if (tabName === 'camera') {
         loadCameraSettings();
+    
+    // Initialize gallery as default tab
+    if(typeof ensureGalleryInitialized==="function") ensureGalleryInitialized();
+    if(typeof loadCalendar==="function") loadCalendar();
+    if(typeof startScrollCheck==="function") startScrollCheck();
         startPreviewRefresh();
     } else {
         stopPreviewRefresh();

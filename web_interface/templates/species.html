@@ -319,6 +319,11 @@
                 height: 40px;
             }
         }
+            .species-loading { display: none; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; color: white; z-index: 10; }
+        .species-loading.visible { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+        .loading-spinner { width: 40px; height: 40px; border: 3px solid rgba(255,255,255,0.3); border-top-color: white; border-radius: 50%; animation: spin 1s linear infinite; }
+        .email-options { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+        /* Pinch-to-zoom */ .modal-img-container { position: relative; width: 100%; height: calc(100% - 120px); overflow: hidden; touch-action: none; display: flex; align-items: center; justify-content: center; } .modal-img-container img { max-width: 100%; max-height: 100%; object-fit: contain; transform-origin: center center; transition: transform 0.1s ease-out; user-select: none; -webkit-user-select: none; } .modal-img-container.zoomed { cursor: move; } .modal-img-container.zoomed img { max-width: none; max-height: none; }
     </style>
 </head>
 <body>
@@ -329,10 +334,14 @@
                 <h1>Bird Species Gallery</h1>
                 <div class="timestamp" id="current-time">00:00:00</div>
             </div>
-            <a href="/" class="action-btn secondary" style="padding: 0.5rem 1rem; text-decoration: none;">
-                Back to Dashboard
-            </a>
+            <!-- Removed back button -->
         </header>
+
+        <!-- Tab Navigation -->
+        <nav class="tabs">
+            <a href="/" class="tab-btn">Gallery</a>
+            <a href="/species" class="tab-btn active">Species</a>
+        </nav>
 
         <!-- Summary Stats -->
         <section class="stats" style="padding: 1rem;">
@@ -363,19 +372,85 @@
         <button class="modal-nav-btn prev" id="nav-prev">&#10094;</button>
         <button class="modal-nav-btn next" id="nav-next">&#10095;</button>
         <div class="modal-content" id="modal-content">
-            <img id="species-modal-img" class="modal-img" src="" alt="">
+            <div id="species-loading" class="species-loading"><div class="loading-spinner"></div><span>Loading...</span></div>
+            <div id="species-img-container" class="modal-img-container"><img id="species-modal-img" class="modal-img" src="" alt=""></div>
             <p id="species-modal-caption" class="modal-caption"></p>
             <div class="modal-counter" id="modal-counter"></div>
             <div class="modal-controls">
-                <button class="modal-btn email-btn" id="email-btn">
-                    <span>📧</span> Email Photo
+                <div class="email-options">
+                <button class="modal-btn email-btn" id="share-btn" onclick="shareSpeciesImage()">
+                    <span>📧</span> Email Full Size
                 </button>
+                </div>
             </div>
             <div class="swipe-hint">Swipe left/right to navigate, down to close</div>
         </div>
     </div>
 
     <script>
+// Pinch-to-zoom functionality
+function initPinchZoom(container, img) {
+    let scale = 1, lastScale = 1, posX = 0, posY = 0, lastPosX = 0, lastPosY = 0;
+    let pinchStartDist = 0, isPinching = false, isDragging = false;
+    let startX = 0, startY = 0, touchStartTime = 0, lastTouchEnd = 0;
+
+    function resetZoom() {
+        scale = 1; lastScale = 1; posX = 0; posY = 0; lastPosX = 0; lastPosY = 0;
+        img.style.transform = 'translate(0px, 0px) scale(1)';
+        container.classList.remove('zoomed');
+    }
+    function updateTransform() {
+        img.style.transform = 'translate(' + posX + 'px, ' + posY + 'px) scale(' + scale + ')';
+        if (scale > 1) container.classList.add('zoomed');
+        else container.classList.remove('zoomed');
+    }
+    function getDistance(t) {
+        const dx = t[0].clientX - t[1].clientX, dy = t[0].clientY - t[1].clientY;
+        return Math.sqrt(dx*dx + dy*dy);
+    }
+
+    container.addEventListener('touchstart', function(e) {
+        if (e.touches.length === 2) {
+            e.preventDefault(); e.stopPropagation();
+            isPinching = true; pinchStartDist = getDistance(e.touches); lastScale = scale;
+        } else if (e.touches.length === 1) {
+            touchStartTime = Date.now(); startX = e.touches[0].clientX; startY = e.touches[0].clientY;
+            if (scale > 1) { isDragging = true; lastPosX = posX; lastPosY = posY; e.preventDefault(); }
+        }
+    }, { passive: false });
+
+    container.addEventListener('touchmove', function(e) {
+        if (isPinching && e.touches.length === 2) {
+            e.preventDefault(); e.stopPropagation();
+            const dist = getDistance(e.touches);
+            scale = Math.max(1, Math.min(5, lastScale * (dist / pinchStartDist)));
+            updateTransform();
+        } else if (isDragging && e.touches.length === 1 && scale > 1) {
+            e.preventDefault(); e.stopPropagation();
+            posX = lastPosX + (e.touches[0].clientX - startX);
+            posY = lastPosY + (e.touches[0].clientY - startY);
+            updateTransform();
+        }
+    }, { passive: false });
+
+    container.addEventListener('touchend', function(e) {
+        if (isPinching) { isPinching = false; lastScale = scale; if (scale <= 1.1) resetZoom(); e.preventDefault(); return; }
+        if (isDragging) { isDragging = false; lastPosX = posX; lastPosY = posY; return; }
+        const now = Date.now();
+        if (e.touches.length === 0) {
+            if (now - lastTouchEnd < 300 && now - touchStartTime < 200) {
+                e.preventDefault();
+                if (scale > 1) resetZoom(); else { scale = 2.5; lastScale = scale; updateTransform(); }
+            }
+            lastTouchEnd = now;
+        }
+    }, { passive: false });
+
+    img.addEventListener('load', resetZoom);
+    return { resetZoom: resetZoom };
+}
+window.speciesZoomController = null;
+
         // Global state for species images
         let speciesImages = {};
         let currentSpecies = null;
@@ -436,6 +511,7 @@
                         if (species.identified_photos && species.identified_photos.length > 0) {
                             speciesImages[species.common_name] = species.identified_photos.map(p => ({
                                 path: '/' + p.path,
+                                resizedPath: '/' + p.path.replace('identified_species/', 'identified_species_resized/'),
                                 thumbPath: '/' + p.path.replace('identified_species/', 'identified_species_thumb/'),
                                 filename: p.filename
                             }));
@@ -495,10 +571,6 @@
                             <div class="species-info">
                                 ${species.characteristics ?
                                     `<strong>Characteristics:</strong> ${species.characteristics.join(', ')}<br>` : ''}
-                                ${species.conservation_status ?
-                                    `<span class="conservation-status status-${species.conservation_status}">
-                                        ${statusMap[species.conservation_status] || species.conservation_status}
-                                    </span>` : ''}
                                 ${species.fun_facts && species.fun_facts[0] ?
                                     `<div class="fun-fact">💡 ${species.fun_facts[0]}</div>` : ''}
                             </div>
@@ -541,6 +613,14 @@
 
             updateModalImage();
             modal.classList.add('open');
+            // Initialize pinch zoom
+            if (!window.speciesZoomController) {
+                const container = document.getElementById('species-img-container');
+                const imgEl = document.getElementById('species-modal-img');
+                if (container && imgEl) window.speciesZoomController = initPinchZoom(container, imgEl);
+            } else if (window.speciesZoomController.resetZoom) {
+                window.speciesZoomController.resetZoom();
+            }
         }
 
         function updateModalImage() {
@@ -548,7 +628,15 @@
             if (!images) return;
 
             const image = images[currentImageIndex];
-            modalImg.src = image.path;
+            // Show loading
+            const loadingEl = document.getElementById("species-loading");
+            if (loadingEl) loadingEl.classList.add("visible");
+            modalImg.style.opacity = "0.3";
+            modalImg.onload = function() {
+                if (loadingEl) loadingEl.classList.remove("visible");
+                modalImg.style.opacity = "1";
+            };
+            modalImg.src = image.resizedPath;
             modalCaption.textContent = currentSpecies;
             modalCounter.textContent = `${currentImageIndex + 1} of ${images.length}`;
 
@@ -601,7 +689,7 @@
                 if (data.success) {
                     emailBtn.innerHTML = '<span>✓</span> Sent!';
                     setTimeout(() => {
-                        emailBtn.innerHTML = '<span>📧</span> Email Photo';
+                        emailBtn.innerHTML = '<span>📧</span> Send';
                         emailBtn.disabled = false;
                     }, 2000);
                 } else {
@@ -609,11 +697,34 @@
                 }
             } catch (error) {
                 alert('Failed to send email: ' + error.message);
-                emailBtn.innerHTML = '<span>📧</span> Email Photo';
+                emailBtn.innerHTML = '<span>📧</span> Send';
                 emailBtn.disabled = false;
             }
         }
-
+        async function shareSpeciesImage() {
+            const images = speciesImages[currentSpecies];
+            if (!images) return;
+            const image = images[currentImageIndex];
+            const btn = document.getElementById('share-btn');
+            if (btn) { btn.disabled = true; btn.innerHTML = '<span>⏳</span> Loading...'; }
+            try {
+                const response = await fetch(image.path);
+                const blob = await response.blob();
+                const filename = image.filename || 'bird_photo.jpg';
+                const file = new File([blob], filename, { type: blob.type });
+                if (navigator.canShare && navigator.canShare({ files: [file] })) {
+                    await navigator.share({ files: [file], title: 'Bird Photo: ' + currentSpecies, text: currentSpecies });
+                } else {
+                    const a = document.createElement('a');
+                    a.href = URL.createObjectURL(blob);
+                    a.download = filename;
+                    a.click();
+                    URL.revokeObjectURL(a.href);
+                    alert('Image downloaded. Please attach it to your email manually.');
+                }
+            } catch (err) { if (err.name !== 'AbortError') console.error('Share failed:', err); }
+            if (btn) { btn.disabled = false; btn.innerHTML = '<span>📧</span> Email Full Size'; }
+        }
         // Event Listeners
         modalClose.addEventListener('click', closeSpeciesModal);
 

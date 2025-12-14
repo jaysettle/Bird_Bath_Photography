@@ -94,7 +94,7 @@ def get_images_dir():
 IMAGES_DIR = get_images_dir()
 UPLOAD_LOG = IMAGES_DIR / "drive_uploads.json"
 # Thumbnail settings
-THUMBNAIL_SIZE = (300, 300)
+THUMBNAIL_SIZE = (600, 600)
 THUMBNAIL_DIR = IMAGES_DIR / ".thumbnails"
 
 def ensure_thumbnail_dir():
@@ -572,6 +572,82 @@ def api_image(image_path):
     
     return jsonify({'error': 'Image not found'}), 404
 
+
+MODAL_IMAGE_SIZE = (1200, 1200)
+
+@app.route("/api/image-resized/<path:image_path>")
+@requires_auth
+def api_image_resized(image_path):
+    try:
+        filepath = (IMAGES_DIR / image_path).resolve()
+        if not filepath.is_relative_to(IMAGES_DIR.resolve()):
+            return jsonify({"error": "Invalid path"}), 403
+    except Exception:
+        return jsonify({"error": "Invalid path"}), 403
+    if not filepath.exists() and "/" not in image_path:
+        for date_folder in IMAGES_DIR.iterdir():
+            if date_folder.is_dir() and len(date_folder.name) == 10:
+                date_filepath = date_folder / image_path
+                if date_filepath.exists():
+                    filepath = date_filepath
+                    break
+    if filepath.exists() and filepath.suffix.lower() in [".jpeg", ".jpg"]:
+        try:
+            with Image.open(filepath) as img:
+                if img.mode in ("RGBA", "P"):
+                    img = img.convert("RGB")
+                img.thumbnail(MODAL_IMAGE_SIZE, Image.Resampling.LANCZOS)
+                buffer = BytesIO()
+                img.save(buffer, format="JPEG", quality=85)
+                buffer.seek(0)
+                return Response(buffer.getvalue(), mimetype="image/jpeg")
+        except Exception as e:
+            logger.error(f"Error resizing image {filepath}: {e}")
+            return send_file(filepath, mimetype="image/jpeg")
+    return jsonify({"error": "Image not found"}), 404
+
+@app.route("/api/image-metadata/<path:image_path>")
+@requires_auth
+def api_image_metadata(image_path):
+    try:
+        filepath = (IMAGES_DIR / image_path).resolve()
+        if not filepath.is_relative_to(IMAGES_DIR.resolve()):
+            return jsonify({"error": "Invalid path"}), 403
+    except Exception:
+        return jsonify({"error": "Invalid path"}), 403
+    if not filepath.exists() and "/" not in image_path:
+        for date_folder in IMAGES_DIR.iterdir():
+            if date_folder.is_dir() and len(date_folder.name) == 10:
+                date_filepath = date_folder / image_path
+                if date_filepath.exists():
+                    filepath = date_filepath
+                    break
+    if filepath.exists():
+        try:
+            stat = filepath.stat()
+            with Image.open(filepath) as img:
+                width, height = img.size
+                resized_w, resized_h = width, height
+                if width > MODAL_IMAGE_SIZE[0] or height > MODAL_IMAGE_SIZE[1]:
+                    ratio = min(MODAL_IMAGE_SIZE[0]/width, MODAL_IMAGE_SIZE[1]/height)
+                    resized_w = int(width * ratio)
+                    resized_h = int(height * ratio)
+                return jsonify({
+                    "original_width": width,
+                    "original_height": height,
+                    "display_width": resized_w,
+                    "display_height": resized_h,
+                    "file_size_bytes": stat.st_size,
+                    "file_size_mb": round(stat.st_size / (1024*1024), 2),
+                    "date_taken": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+                    "filename": filepath.name
+                })
+        except Exception as e:
+            logger.error(f"Error getting metadata for {filepath}: {e}")
+            return jsonify({"error": str(e)}), 500
+    return jsonify({"error": "Image not found"}), 404
+
+
 @app.route('/api/restart', methods=['POST'])
 def api_restart():
     """Restart the main application"""
@@ -892,6 +968,24 @@ def serve_identified_species_photo(species_folder, filename):
     except Exception as e:
         logger.error(f"Error serving identified species photo: {e}")
         return "Error serving photo", 500
+
+@app.route("/identified_species_resized/<species_folder>/<filename>")
+def serve_identified_species_resized(species_folder, filename):
+    try:
+        photo_path = IMAGES_DIR / "IdentifiedSpecies" / species_folder / filename
+        if photo_path.exists():
+            with Image.open(photo_path) as img:
+                if img.mode in ("RGBA", "P"):
+                    img = img.convert("RGB")
+                img.thumbnail(MODAL_IMAGE_SIZE, Image.Resampling.LANCZOS)
+                buffer = BytesIO()
+                img.save(buffer, format="JPEG", quality=85)
+                buffer.seek(0)
+                return Response(buffer.getvalue(), mimetype="image/jpeg")
+        return "Photo not found", 404
+    except Exception as e:
+        logger.error(f"Error serving resized species photo: {e}")
+        return "Error", 500
 
 @app.route('/identified_species_thumb/<species_folder>/<filename>')
 def serve_identified_species_thumbnail(species_folder, filename):
