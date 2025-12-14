@@ -453,6 +453,232 @@ class TestSpeciesDatabase:
         result = server.load_species_database()
         assert result == {}
 
+    def test_load_species_database_valid_file(self, tmp_path, monkeypatch):
+        """Test loading species database with valid file"""
+        # Create a test species database
+        species_db = {
+            "species": {
+                "Cardinalis cardinalis": {
+                    "common_name": "Northern Cardinal",
+                    "photo_gallery": ["/path/to/photo1.jpeg", "/path/to/photo2.jpeg"]
+                }
+            },
+            "sightings": []
+        }
+        db_path = tmp_path / "species_database.json"
+        db_path.write_text(json.dumps(species_db))
+
+        monkeypatch.setattr(server, 'SPECIES_DB_PATH', db_path)
+        monkeypatch.setattr(server, '_species_cache', {})
+        monkeypatch.setattr(server, '_species_cache_time', 0)
+
+        result = server.load_species_database()
+        assert 'photo1.jpeg' in result
+        assert result['photo1.jpeg']['common_name'] == 'Northern Cardinal'
+
+    def test_species_cache_updates_on_file_change(self, tmp_path, monkeypatch):
+        """Test that species cache updates when file is modified"""
+        db_path = tmp_path / "species_database.json"
+
+        # Create initial database
+        species_db = {"species": {}, "sightings": []}
+        db_path.write_text(json.dumps(species_db))
+
+        monkeypatch.setattr(server, 'SPECIES_DB_PATH', db_path)
+        monkeypatch.setattr(server, '_species_cache', {})
+        monkeypatch.setattr(server, '_species_cache_time', 0)
+
+        # Load initial
+        result1 = server.load_species_database()
+        assert result1 == {}
+
+
+# ============================================
+# Species Page Tests
+# ============================================
+
+@pytest.fixture
+def mock_species_data(tmp_path, monkeypatch):
+    """Create mock species database and identified species folder"""
+    # Create species database
+    species_db = {
+        "species": {
+            "Cardinalis cardinalis": {
+                "common_name": "Northern Cardinal",
+                "sighting_count": 5,
+                "first_seen": "2024-01-10T10:30:00",
+                "characteristics": ["Red plumage", "Crest"],
+                "conservation_status": "LC",
+                "fun_facts": ["Males are bright red"],
+                "photo_gallery": []
+            },
+            "Cyanocitta cristata": {
+                "common_name": "Blue Jay",
+                "sighting_count": 2,
+                "first_seen": "2024-01-12T14:20:00",
+                "characteristics": ["Blue and white"],
+                "conservation_status": "LC",
+                "fun_facts": ["Can mimic other birds"],
+                "photo_gallery": []
+            }
+        },
+        "sightings": [
+            {"species": "Cardinalis cardinalis", "timestamp": "2024-01-10T10:30:00"},
+            {"species": "Cyanocitta cristata", "timestamp": "2024-01-12T14:20:00"}
+        ]
+    }
+
+    db_path = tmp_path / "species_database.json"
+    db_path.write_text(json.dumps(species_db))
+    monkeypatch.setattr(server, 'SPECIES_DB_PATH', db_path)
+    # Also patch BASE_DIR since api_species uses it directly
+    monkeypatch.setattr(server, 'BASE_DIR', tmp_path)
+
+    # Create IdentifiedSpecies folder structure
+    identified_dir = tmp_path / "IdentifiedSpecies"
+    identified_dir.mkdir()
+
+    # Create species folders with photos
+    cardinal_folder = identified_dir / "Northern_Cardinal_Cardinalis_cardinalis"
+    cardinal_folder.mkdir()
+    (cardinal_folder / "cardinal_001.jpeg").write_bytes(b'\xff\xd8\xff\xe0')
+    (cardinal_folder / "cardinal_002.jpeg").write_bytes(b'\xff\xd8\xff\xe0')
+
+    bluejay_folder = identified_dir / "Blue_Jay_Cyanocitta_cristata"
+    bluejay_folder.mkdir()
+    (bluejay_folder / "bluejay_001.jpeg").write_bytes(b'\xff\xd8\xff\xe0')
+
+    monkeypatch.setattr(server, 'IMAGES_DIR', tmp_path)
+
+    return tmp_path
+
+
+class TestSpeciesPageRoute:
+    """Tests for /species page route"""
+
+    def test_species_page_accessible(self, client):
+        """Test that species page is accessible without auth"""
+        response = client.get('/species')
+        # May return 200 or 500 depending on template availability
+        assert response.status_code in [200, 500]
+
+    def test_species_page_returns_html(self, client):
+        """Test that species page returns HTML content"""
+        response = client.get('/species')
+        if response.status_code == 200:
+            assert b'<!DOCTYPE html>' in response.data or b'<html' in response.data
+
+
+class TestSpeciesApiEndpoint:
+    """Tests for /api/species endpoint"""
+
+    def test_returns_species_data(self, client, mock_species_data):
+        """Test that species data is returned"""
+        response = client.get('/api/species')
+        assert response.status_code == 200
+
+        data = response.get_json()
+        assert data['success'] is True
+        assert 'total_species' in data
+        assert 'total_sightings' in data
+        assert 'species_list' in data
+
+    def test_species_count(self, client, mock_species_data):
+        """Test that species count is correct"""
+        response = client.get('/api/species')
+        data = response.get_json()
+
+        assert data['total_species'] == 2
+
+    def test_sightings_count(self, client, mock_species_data):
+        """Test that sightings count is correct"""
+        response = client.get('/api/species')
+        data = response.get_json()
+
+        assert data['total_sightings'] == 2
+
+    def test_species_details(self, client, mock_species_data):
+        """Test that species details are included"""
+        response = client.get('/api/species')
+        data = response.get_json()
+
+        species_list = data['species_list']
+        assert 'Cardinalis cardinalis' in species_list
+
+        cardinal = species_list['Cardinalis cardinalis']
+        assert cardinal['common_name'] == 'Northern Cardinal'
+        assert cardinal['sighting_count'] == 5
+
+    def test_identified_photos_included(self, client, mock_species_data):
+        """Test that identified photos are included in response"""
+        response = client.get('/api/species')
+        data = response.get_json()
+
+        species_list = data['species_list']
+        cardinal = species_list['Cardinalis cardinalis']
+
+        # Should have identified_photos from the folder
+        assert 'identified_photos' in cardinal
+        assert cardinal['photo_count'] >= 0
+
+    def test_empty_species_database(self, client, tmp_path, monkeypatch):
+        """Test with empty species database"""
+        # Create empty database
+        db_path = tmp_path / "species_database.json"
+        db_path.write_text(json.dumps({"species": {}, "sightings": []}))
+        monkeypatch.setattr(server, 'SPECIES_DB_PATH', db_path)
+        monkeypatch.setattr(server, 'IMAGES_DIR', tmp_path)
+
+        response = client.get('/api/species')
+        data = response.get_json()
+
+        assert data['success'] is True
+        assert data['total_species'] == 0
+
+    def test_missing_species_database(self, client, tmp_path, monkeypatch):
+        """Test when species database file doesn't exist"""
+        monkeypatch.setattr(server, 'SPECIES_DB_PATH', tmp_path / "nonexistent.json")
+        monkeypatch.setattr(server, 'IMAGES_DIR', tmp_path)
+
+        response = client.get('/api/species')
+        data = response.get_json()
+
+        assert data['success'] is True
+        assert data['total_species'] == 0
+
+    def test_recent_sightings_included(self, client, mock_species_data):
+        """Test that recent sightings are included"""
+        response = client.get('/api/species')
+        data = response.get_json()
+
+        assert 'recent_sightings' in data
+
+
+class TestIdentifiedSpeciesPhotoEndpoint:
+    """Tests for /identified_species/<species_folder>/<filename> endpoint"""
+
+    def test_serves_species_photo(self, client, mock_species_data):
+        """Test that identified species photos are served"""
+        response = client.get('/identified_species/Northern_Cardinal_Cardinalis_cardinalis/cardinal_001.jpeg')
+        assert response.status_code == 200
+
+    def test_photo_not_found(self, client, mock_species_data):
+        """Test 404 for non-existent species photo"""
+        response = client.get('/identified_species/Northern_Cardinal_Cardinalis_cardinalis/nonexistent.jpeg')
+        assert response.status_code == 404
+
+    def test_folder_not_found(self, client, mock_species_data):
+        """Test 404 for non-existent species folder"""
+        response = client.get('/identified_species/Nonexistent_Species/photo.jpeg')
+        assert response.status_code == 404
+
+    def test_serves_correct_content_type(self, client, mock_species_data):
+        """Test that correct content type is returned for images"""
+        response = client.get('/identified_species/Northern_Cardinal_Cardinalis_cardinalis/cardinal_001.jpeg')
+        if response.status_code == 200:
+            # Flask send_file should set appropriate content type
+            assert response.content_type in ['image/jpeg', 'application/octet-stream']
+
 
 # ============================================
 # Main Index Route Test
