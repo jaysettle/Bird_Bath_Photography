@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Photo gallery tab for viewing captured images"""
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
                             QLabel, QPushButton, QCheckBox, QScrollArea,

@@ -1633,3 +1633,20 @@ def debug_gallery():
     # ... existing code
 ```
 
+
+### 15. Infinite Scroll Fix (2025-12-13)
+
+Problem: Gallery infinite scroll stopped working after calendar integration.
+
+Root Cause: JavaScript window.currentTab variable showed undefined due to scoping issues between DOMContentLoaded and inline onclick handlers.
+
+Solution: Changed scroll detection to check actual DOM visibility (gallery-tab display style) instead of relying on JavaScript variable.
+
+Additional Fixes:
+- Added TEMPLATES_AUTO_RELOAD to Flask server.py
+- Scroll check interval runs every 500ms
+- Triggers loadGallery when within 600px of bottom
+
+Files Changed:
+- web_interface/static/js/app.js: Updated startScrollCheck function
+- web_interface/server.py: Added template auto-reload config

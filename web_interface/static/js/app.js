@@ -13,7 +13,8 @@ const GALLERY_SCROLL_THRESHOLD = 250; // px from bottom to fetch more
 // State
 let isRestarting = false;
 let autoScroll = true;
-let currentTab = 'dashboard';
+window.currentTab = 'dashboard';
+console.log('[INIT] window.currentTab initialized to:', window.currentTab);
 let autoRefreshPreview = true;
 let previewInterval = null;
 
@@ -68,8 +69,8 @@ document.addEventListener('DOMContentLoaded', () => {
     setInterval(updateTimestamp, 1000);
     
     // Event listeners
-    elements.restartBtn.addEventListener('click', restartApp);
-    elements.refreshImagesBtn.addEventListener('click', refreshImages);
+    if (elements.restartBtn) elements.restartBtn.addEventListener('click', restartApp);
+    if (elements.refreshImagesBtn) elements.refreshImagesBtn.addEventListener('click', refreshImages);
     document.querySelector('.close').addEventListener('click', closeModal);
     elements.modal.addEventListener('click', (e) => {
         if (e.target === elements.modal) closeModal();
@@ -78,6 +79,13 @@ document.addEventListener('DOMContentLoaded', () => {
     // Swipe gesture support for modal
     elements.modalImg.addEventListener('touchstart', handleTouchStart, { passive: true });
     elements.modalImg.addEventListener('touchend', handleTouchEnd, { passive: true });
+
+    // Mobile scroll detection
+    document.addEventListener('touchmove', () => {
+        if (window.currentTab === 'gallery') {
+            setTimeout(handleGalleryScroll, 100);
+        }
+    }, { passive: true });
 
     // Keyboard navigation for modal
     document.addEventListener('keydown', (e) => {
@@ -105,6 +113,7 @@ document.addEventListener('DOMContentLoaded', () => {
         elements.galleryRefreshBtn.addEventListener('click', refreshGallery);
     }
 
+    document.addEventListener('scroll', handleGalleryScroll, { passive: true, capture: true });
     window.addEventListener('scroll', handleGalleryScroll, { passive: true });
     
     
@@ -200,6 +209,8 @@ function ensureGalleryInitialized() {
         loadGallery({ initial: true });
         galleryState.initialized = true;
     }
+    // Setup intersection observer for infinite scroll
+    setTimeout(setupGalleryObserver, 500);
 }
 
 function ensureDateSection(dateStr) {
@@ -338,16 +349,20 @@ async function loadGallery({ initial = false } = {}) {
         }
 
         // Prepare state for next fetch
+        console.log('[GALLERY] API response - has_more:', data.has_more, 'next_date:', data.next_date, 'date:', data.date);
         if (data.has_more) {
             galleryState.currentDate = data.date;
             galleryState.offset = data.offset;
+            console.log('[GALLERY] More images for this date, offset:', data.offset);
         } else if (data.next_date) {
             galleryState.currentDate = data.next_date;
             galleryState.offset = 0;
+            console.log('[GALLERY] Moving to next date:', data.next_date);
         } else {
             galleryState.currentDate = null;
             galleryState.offset = 0;
             galleryState.allLoaded = true;
+            console.log('[GALLERY] No more dates - allLoaded = true');
         }
 
         // Automatically continue if current date had no images but a next date exists
@@ -365,6 +380,7 @@ async function loadGallery({ initial = false } = {}) {
         }
     } finally {
         galleryState.loading = false;
+        updateLoadMoreButton();
         if (shouldAutoLoadNext) {
             loadGallery();
         }
@@ -684,7 +700,7 @@ function escapeHtml(unsafe) {
 
 // Tab switching
 function switchTab(tabName) {
-    currentTab = tabName;
+    window.currentTab = tabName;
     
     // Update tab buttons
     document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -709,15 +725,114 @@ function switchTab(tabName) {
     }
 }
 
+
+// Timer-based scroll check for infinite scroll (works on all browsers)
+let scrollCheckInterval = null;
+
+function startScrollCheck() {
+    scrollCheckInterval = setInterval(() => {
+        const galleryVisible = document.getElementById('gallery-tab').style.display !== 'none';
+        if (!galleryVisible || galleryState.loading || galleryState.allLoaded) return;
+
+        const scrollTop = window.pageYOffset || document.documentElement.scrollTop || document.body.scrollTop || 0;
+        const scrollHeight = Math.max(
+            document.body.scrollHeight,
+            document.documentElement.scrollHeight,
+            document.body.offsetHeight,
+            document.documentElement.offsetHeight
+        );
+        const clientHeight = window.innerHeight || document.documentElement.clientHeight;
+        const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+
+        if (distanceFromBottom < 600) {
+            console.log('[TIMER] Near bottom, loading more... distance:', distanceFromBottom);
+            loadGallery();
+        }
+    }, 500);
+    console.log('[TIMER] Scroll check started');
+}
+
+function stopScrollCheck() {
+    if (scrollCheckInterval) {
+        clearInterval(scrollCheckInterval);
+        scrollCheckInterval = null;
+        console.log('[TIMER] Scroll check stopped');
+    }
+}
+
 function handleGalleryScroll() {
-    if (currentTab !== 'gallery' || galleryState.loading || galleryState.allLoaded) return;
+    const galleryVisible = document.getElementById('gallery-tab').style.display !== 'none';
+        if (!galleryVisible || galleryState.loading || galleryState.allLoaded) return;
 
-    const scrollPosition = window.innerHeight + window.scrollY;
-    const triggerPoint = document.body.offsetHeight - GALLERY_SCROLL_THRESHOLD;
+    // Check if we're near the bottom of the page
+    const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+    const scrollHeight = document.documentElement.scrollHeight;
+    const clientHeight = document.documentElement.clientHeight;
+    const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
 
-    if (scrollPosition >= triggerPoint) {
+    if (distanceFromBottom < 500) {
+        console.log('[SCROLL] Near bottom, loading more... distance:', distanceFromBottom);
         loadGallery();
     }
+}
+
+
+// Update Load More button state
+function updateLoadMoreButton() {
+    const btn = document.getElementById('load-more-btn');
+    if (!btn) return;
+
+    if (galleryState.allLoaded) {
+        btn.textContent = 'No more photos';
+        btn.disabled = true;
+        btn.style.opacity = '0.5';
+    } else if (galleryState.loading) {
+        btn.textContent = 'Loading...';
+        btn.disabled = true;
+    } else {
+        btn.textContent = 'Load More';
+        btn.disabled = false;
+        btn.style.opacity = '1';
+    }
+}
+
+// Intersection Observer for reliable infinite scroll
+let galleryObserver = null;
+
+function setupGalleryObserver() {
+    console.log('[OBSERVER] Setting up gallery observer...');
+
+    // Use existing trigger element from HTML
+    const galleryLoadTrigger = document.getElementById('gallery-load-trigger');
+    if (!galleryLoadTrigger) {
+        console.log('[OBSERVER] No trigger element found!');
+        return;
+    }
+
+    // Disconnect old observer if exists
+    if (galleryObserver) {
+        galleryObserver.disconnect();
+    }
+
+    // Create new observer
+    galleryObserver = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+            if (entry.isIntersecting) {
+                console.log('[OBSERVER] Trigger visible - tab:', window.currentTab, 'loading:', galleryState.loading, 'allLoaded:', galleryState.allLoaded);
+                if (window.currentTab === 'gallery' && !galleryState.loading && !galleryState.allLoaded) {
+                    console.log('[OBSERVER] Loading more...');
+                    loadGallery();
+                }
+            }
+        });
+    }, {
+        root: null,
+        rootMargin: '400px',
+        threshold: 0
+    });
+
+    galleryObserver.observe(galleryLoadTrigger);
+    console.log('[OBSERVER] Observer attached');
 }
 
 // Load camera settings
@@ -872,7 +987,7 @@ function setupCameraPreview() {
             autoRefreshPreview = !autoRefreshPreview;
             autoToggle.classList.toggle('active', autoRefreshPreview);
             
-            if (autoRefreshPreview && currentTab === 'camera') {
+            if (autoRefreshPreview && window.currentTab === 'camera') {
                 startPreviewRefresh();
             } else {
                 stopPreviewRefresh();
@@ -1032,6 +1147,9 @@ function jumpToDate(dateStr) {
     // Load from this date (will continue to next days on scroll)
     loadGallery({ initial: true });
 
+    // Setup observer after load
+    setTimeout(setupGalleryObserver, 500);
+
     // Scroll to gallery
     document.getElementById('gallery-grid')?.scrollIntoView({ behavior: 'smooth' });
 }
@@ -1170,4 +1288,50 @@ document.addEventListener('DOMContentLoaded', () => {
             settingsDropdown.classList.add('hidden');
         });
     }
+
+    // SUPER DEBUG INFINITE SCROLL
+    console.log('[INIT] Setting up infinite scroll - window.currentTab is:', window.currentTab);
+
+    // Log window.currentTab every 2 seconds regardless
+    setInterval(() => {
+        console.log('[TAB-CHECK] window.currentTab =', window.currentTab, 'type:', typeof window.currentTab);
+    }, 2000);
+
+    let debugCounter = 0;
+    setInterval(() => {
+        debugCounter++;
+
+        const pct = Math.round((window.scrollY + window.innerHeight) / document.body.scrollHeight * 100);
+
+        // Always log current state
+        console.log('[SCROLL #' + debugCounter + '] tab=' + window.currentTab +
+                    ' loading=' + galleryState.loading +
+                    ' allLoaded=' + galleryState.allLoaded +
+                    ' pct=' + pct + '%');
+
+        // Check if on gallery
+        if (window.currentTab !== 'gallery') {
+            return; // Silent skip
+        }
+
+        console.log('[SCROLL] On gallery tab! Checking conditions...');
+
+        if (galleryState.loading) {
+            console.log('[SCROLL] Skip - loading');
+            return;
+        }
+        if (galleryState.allLoaded) {
+            console.log('[SCROLL] Skip - allLoaded');
+            return;
+        }
+
+        if (pct > 70) {
+            console.log('[SCROLL] *** LOADING MORE *** pct=' + pct);
+            loadGallery();
+        } else {
+            console.log('[SCROLL] Not at 70% yet, pct=' + pct);
+        }
+    }, 1000);
+
+    console.log('[INIT] Infinite scroll started');
 });

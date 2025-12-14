@@ -34,7 +34,7 @@ class GalleryLoader(QThread):
             self.progress.emit(0, 0, "Scanning for images...")
             image_files = []
             for ext in ['*.jpg', '*.jpeg', '*.png']:
-                image_files.extend(self.storage_dir.glob(ext))
+                image_files.extend(self.storage_dir.glob(f"**/{ext}"))
 
             if not image_files:
                 self.finished_loading.emit()

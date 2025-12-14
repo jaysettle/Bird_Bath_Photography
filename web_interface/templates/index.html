@@ -303,8 +303,8 @@
 
         <!-- Tab Navigation -->
         <nav class="tabs">
-            <a href="/#dashboard" class="tab-btn active" data-tab="dashboard" onclick="document.getElementById('gallery-tab').style.display='none'; document.getElementById('dashboard-tab').style.display='block'; document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active')); this.classList.add('active'); return false;">Dashboard</a>
-            <a href="/#gallery" class="tab-btn" onclick="document.getElementById('dashboard-tab').style.display='none'; document.getElementById('gallery-tab').style.display='block'; document.querySelector('[data-tab=dashboard]').classList.remove('active'); this.classList.add('active'); if(typeof ensureGalleryInitialized==='function')ensureGalleryInitialized(); return false;">Gallery</a>
+            <a href="/#dashboard" class="tab-btn active" data-tab="dashboard" onclick="window.currentTab='dashboard'; document.getElementById('gallery-tab').style.display='none'; document.getElementById('dashboard-tab').style.display='block'; document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active')); this.classList.add('active'); if(typeof stopScrollCheck==='function')stopScrollCheck(); return false;">Dashboard</a>
+            <a href="/#gallery" class="tab-btn" onclick="window.currentTab='gallery'; console.log('[CLICK] Set window.currentTab to gallery, value is now:', window.currentTab); document.getElementById('dashboard-tab').style.display='none'; document.getElementById('gallery-tab').style.display='block'; document.querySelector('[data-tab=dashboard]').classList.remove('active'); this.classList.add('active'); if(typeof ensureGalleryInitialized==='function')ensureGalleryInitialized(); if(typeof loadCalendar==='function')loadCalendar(); if(typeof startScrollCheck==='function')startScrollCheck(); return false;">Gallery</a>
             <a href="/species" class="tab-btn">Species</a>
         </nav>
 
@@ -427,6 +427,10 @@
                 </div>
                 <div id="gallery-empty" class="empty-state">Loading gallery...</div>
                 <div id="gallery-grid" class="gallery-collection"></div>
+                <div id="load-more-container" style="text-align: center; padding: 20px;">
+                    <button id="load-more-btn" onclick="if(!galleryState.loading && !galleryState.allLoaded) loadGallery();" style="padding: 15px 30px; font-size: 16px; background: #4a9eff; color: white; border: none; border-radius: 8px; cursor: pointer;">Load More</button>
+                    <div id="gallery-load-trigger" style="height: 50px;"></div>
+                </div>
             </section>
         </div>
 
@@ -441,6 +445,6 @@
         </div>
     </div>
 
-    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+    <script src="/static/js/app.js?v=1765643880"></script>
 </body>
 </html>

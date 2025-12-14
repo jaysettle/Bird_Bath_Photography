@@ -2,12 +2,13 @@
 """Camera control and preview tab"""
 
 from datetime import datetime
+import time
 from pathlib import Path
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
                             QGroupBox, QLabel, QSlider, QPushButton, QCheckBox,
                             QComboBox, QSpinBox, QMessageBox, QApplication, QToolTip)
 from PyQt6.QtCore import Qt, QTimer, QRect
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtGui import QPixmap, QImage
 
 from src.logger import get_logger
 from src.ui.preview_widgets import InteractivePreviewLabel
