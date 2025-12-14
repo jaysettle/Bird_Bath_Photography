@@ -52,7 +52,7 @@ lsusb | grep -i luxonis      # Should show OAK camera
 ## Architecture
 
 ```
-main.py (~2000 lines)                  # Entry point, MainWindow, service orchestration
+main.py (794 lines)                    # Entry point, MainWindow, service orchestration
 ├── src/
 │   ├── camera_controller.py (850+)   # OAK-D camera interface, motion detection, DepthAI pipeline
 │   ├── ai_bird_identifier.py (370)   # OpenAI Vision API, species identification
@@ -67,7 +67,7 @@ main.py (~2000 lines)                  # Entry point, MainWindow, service orches
 │   │   ├── drive_stats_monitor.py    # Google Drive folder statistics
 │   │   └── gallery_loader.py (82)    # Background image loading
 │   └── ui/
-│       ├── camera_tab.py (1508)      # Camera preview, ROI selection, stats
+│       ├── camera_tab.py (1494)      # Camera preview, ROI selection, settings save
 │       ├── gallery_tab.py (1239)     # Photo viewer, date organization, multi-select
 │       ├── config_tab.py (1208)      # Settings UI, API testing
 │       ├── services_tab.py (468)     # Service enable/disable, status
@@ -168,10 +168,27 @@ if ev_compensation != 0:
     ctrl.setAutoExposureCompensation(ev_compensation)
 ```
 
-Settings saved in `save_settings()` must also:
-1. Track old vs new value for change detection
-2. Update config dict
-3. Show in save confirmation popup
+### Config File Path
+`camera_tab.py` uses a constant for the config path (NOT `os.path.dirname(__file__)`):
+```python
+APP_ROOT = Path(__file__).parent.parent.parent
+CONFIG_PATH = APP_ROOT / 'config.json'
+```
+
+### ROI Loading
+ROI is loaded from `self.config` in `load_default_roi()`, not from a separate file read:
+```python
+motion_config = self.config.get('motion_detection', {})
+roi_config = motion_config.get('current_roi', {})
+```
+
+### Save Button Feedback
+When settings are saved, the save button turns green with "✓ Saved" for 3 seconds:
+```python
+self.save_settings_btn.setText("✓ Saved")
+self.save_settings_btn.setStyleSheet("background-color: #4CAF50; ...")
+# Resets after 3 seconds via QTimer
+```
 
 ## Logging Tags
 
@@ -191,6 +208,9 @@ grep "\[EV\]" logs/bird_detection.log
 # Exposure changes
 grep "\[EXPOSURE\]" logs/bird_detection.log
 
+# ROI loading/saving
+grep -a "ROI LOAD\|ROI SAVE\|ROI set" logs/bird_detection.log
+
 # Motion detection
 grep "Motion detected in ROI" logs/bird_detection.log
 
@@ -202,6 +222,9 @@ grep "\[GALLERY-LOAD\]" logs/bird_detection.log
 
 # Frame timing
 grep "\[FRAME-SLOW\]" logs/bird_detection.log
+
+# Config file operations
+grep "\[FILE-IO\]" logs/bird_detection.log
 
 # External watchdog
 grep "GUI FROZEN\|Application restarted" logs/watchdog.log
@@ -279,9 +302,11 @@ dmesg | grep -i usb      # Check for errors
 - Verify `~/BirdPhotos/IdentifiedSpecies/` has photos
 - cleanup_manager.py should skip this folder
 
-**ROI not persisting:**
+**ROI not loading/persisting:**
 - ROI saved in config.json under `motion_detection.current_roi`
 - Preview fixed at 960x540, camera at 1920x1080 (2x scaling)
+- Must use `self.config` not file read (see Settings Persistence section)
+- Check logs: `grep -a "ROI LOAD" logs/bird_detection.log`
 
 **Watchdog failing:**
 - Check path: `/home/jaysettle/.../misc/bird_watchdog.py`
