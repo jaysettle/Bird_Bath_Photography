@@ -619,7 +619,27 @@ class TestSpeciesApiEndpoint:
 
         # Should have identified_photos from the folder
         assert 'identified_photos' in cardinal
-        assert cardinal['photo_count'] >= 0
+        # Must actually find the 2 cardinal photos we created in the fixture
+        assert cardinal['photo_count'] == 2, f"Expected 2 photos but got {cardinal['photo_count']}"
+        assert len(cardinal['identified_photos']) == 2
+
+        # Verify photo structure
+        photo = cardinal['identified_photos'][0]
+        assert 'path' in photo
+        assert 'filename' in photo
+        assert 'cardinal' in photo['filename'].lower()
+
+    def test_identified_photos_bluejay(self, client, mock_species_data):
+        """Test that Blue Jay photos are also found"""
+        response = client.get('/api/species')
+        data = response.get_json()
+
+        species_list = data['species_list']
+        bluejay = species_list['Cyanocitta cristata']
+
+        # Should find the 1 bluejay photo
+        assert bluejay['photo_count'] == 1, f"Expected 1 photo but got {bluejay['photo_count']}"
+        assert len(bluejay['identified_photos']) == 1
 
     def test_empty_species_database(self, client, tmp_path, monkeypatch):
         """Test with empty species database"""
@@ -627,6 +647,7 @@ class TestSpeciesApiEndpoint:
         db_path = tmp_path / "species_database.json"
         db_path.write_text(json.dumps({"species": {}, "sightings": []}))
         monkeypatch.setattr(server, 'SPECIES_DB_PATH', db_path)
+        monkeypatch.setattr(server, 'BASE_DIR', tmp_path)
         monkeypatch.setattr(server, 'IMAGES_DIR', tmp_path)
 
         response = client.get('/api/species')
@@ -634,10 +655,13 @@ class TestSpeciesApiEndpoint:
 
         assert data['success'] is True
         assert data['total_species'] == 0
+        assert data['total_sightings'] == 0
+        assert data['species_list'] == {}
 
     def test_missing_species_database(self, client, tmp_path, monkeypatch):
         """Test when species database file doesn't exist"""
         monkeypatch.setattr(server, 'SPECIES_DB_PATH', tmp_path / "nonexistent.json")
+        monkeypatch.setattr(server, 'BASE_DIR', tmp_path)
         monkeypatch.setattr(server, 'IMAGES_DIR', tmp_path)
 
         response = client.get('/api/species')
@@ -645,6 +669,39 @@ class TestSpeciesApiEndpoint:
 
         assert data['success'] is True
         assert data['total_species'] == 0
+        assert data['total_sightings'] == 0
+        assert data['species_list'] == {}
+
+    def test_species_without_identified_folder(self, client, tmp_path, monkeypatch):
+        """Test species that exist in DB but have no IdentifiedSpecies folder"""
+        # Create species database with species
+        species_db = {
+            "species": {
+                "Cardinalis cardinalis": {
+                    "common_name": "Northern Cardinal",
+                    "sighting_count": 3,
+                    "photo_gallery": []
+                }
+            },
+            "sightings": []
+        }
+        db_path = tmp_path / "species_database.json"
+        db_path.write_text(json.dumps(species_db))
+
+        # Don't create the IdentifiedSpecies folder
+        monkeypatch.setattr(server, 'SPECIES_DB_PATH', db_path)
+        monkeypatch.setattr(server, 'BASE_DIR', tmp_path)
+        monkeypatch.setattr(server, 'IMAGES_DIR', tmp_path)
+
+        response = client.get('/api/species')
+        data = response.get_json()
+
+        assert data['success'] is True
+        assert data['total_species'] == 1
+
+        cardinal = data['species_list']['Cardinalis cardinalis']
+        assert cardinal['photo_count'] == 0
+        assert cardinal['identified_photos'] == []
 
     def test_recent_sightings_included(self, client, mock_species_data):
         """Test that recent sightings are included"""
