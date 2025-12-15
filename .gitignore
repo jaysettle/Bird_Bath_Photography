@@ -73,9 +73,10 @@ camera_settings.json
 .DS_Store
 Thumbs.db
 
-# Test files
-test_*.py
-*.test.py
+# Test output and cache
+.pytest_cache/
+.coverage
+htmlcov/
 
 # Backup files
 *.bak
