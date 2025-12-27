@@ -13,7 +13,7 @@ import psutil
 import subprocess
 from datetime import datetime
 from pathlib import Path
-from flask import Flask, render_template, jsonify, send_file, request, Response
+from flask import Flask, render_template, jsonify, send_file, request, Response, redirect
 from functools import wraps
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
@@ -21,11 +21,20 @@ import logging
 from threading import Thread
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.image import MIMEImage
+
+from io import BytesIO
+from PIL import Image
+
 
 # Add parent directory to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 app = Flask(__name__)
+app.config['TEMPLATES_AUTO_RELOAD'] = True
 CORS(app)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='threading')
 
@@ -84,6 +93,37 @@ def get_images_dir():
 
 IMAGES_DIR = get_images_dir()
 UPLOAD_LOG = IMAGES_DIR / "drive_uploads.json"
+# Thumbnail settings
+THUMBNAIL_SIZE = (600, 600)
+THUMBNAIL_DIR = IMAGES_DIR / ".thumbnails"
+
+def ensure_thumbnail_dir():
+    if not THUMBNAIL_DIR.exists():
+        THUMBNAIL_DIR.mkdir(parents=True, exist_ok=True)
+    return THUMBNAIL_DIR
+
+def get_or_create_thumbnail(image_path):
+    ensure_thumbnail_dir()
+    rel_path = image_path.relative_to(IMAGES_DIR)
+    thumb_path = THUMBNAIL_DIR / rel_path
+    thumb_path.parent.mkdir(parents=True, exist_ok=True)
+    if thumb_path.exists():
+        if thumb_path.stat().st_mtime >= image_path.stat().st_mtime:
+            return thumb_path.read_bytes()
+    try:
+        with Image.open(image_path) as img:
+            if img.mode in ("RGBA", "P"):
+                img = img.convert("RGB")
+            img.thumbnail(THUMBNAIL_SIZE, Image.Resampling.LANCZOS)
+            buffer = BytesIO()
+            img.save(buffer, format="JPEG", quality=85, optimize=True)
+            thumb_bytes = buffer.getvalue()
+            thumb_path.write_bytes(thumb_bytes)
+            return thumb_bytes
+    except Exception as e:
+        logger.error(f"Error creating thumbnail for {image_path}: {e}")
+        return image_path.read_bytes()
+
 
 # Species lookup cache
 _species_cache = {}
@@ -324,6 +364,12 @@ def index():
     """Main page"""
     return render_template('index.html')
 
+@app.route("/gallery")
+@requires_auth
+def gallery_redirect():
+    """Redirect to main page with gallery tab"""
+    return redirect("/#gallery")
+
 @app.route('/api/status')
 def api_status():
     """Get system status"""
@@ -347,6 +393,32 @@ def api_images():
     limit = request.args.get('limit', 20, type=int)
     return jsonify(get_recent_images(limit))
 
+
+
+@app.route('/api/thumbnail/<path:image_path>')
+@requires_auth
+def api_thumbnail(image_path):
+    try:
+        filepath = (IMAGES_DIR / image_path).resolve()
+        if not filepath.is_relative_to(IMAGES_DIR.resolve()):
+            return jsonify({'error': 'Invalid path'}), 403
+    except Exception:
+        return jsonify({'error': 'Invalid path'}), 403
+
+    if not filepath.exists():
+        if '/' not in image_path:
+            for date_folder in IMAGES_DIR.iterdir():
+                if date_folder.is_dir() and len(date_folder.name) == 10 and date_folder.name[4] == '-' and date_folder.name[7] == '-':
+                    date_filepath = date_folder / image_path
+                    if date_filepath.exists():
+                        filepath = date_filepath
+                        break
+
+    if filepath.exists() and filepath.suffix.lower() in ['.jpeg', '.jpg']:
+        thumb_bytes = get_or_create_thumbnail(filepath)
+        return Response(thumb_bytes, mimetype='image/jpeg')
+
+    return jsonify({'error': 'Image not found'}), 404
 
 @app.route('/api/gallery')
 @requires_auth
@@ -437,6 +509,43 @@ def api_gallery():
             'error': str(exc)
         }), 500
 
+
+
+@app.route('/api/photo-counts')
+@requires_auth
+def api_photo_counts():
+    """Get photo counts per date for calendar."""
+    try:
+        date_folders = get_date_folders()
+        counts = {}
+        for folder in date_folders:
+            images = list(folder.glob('*.jpg')) + list(folder.glob('*.jpeg')) + list(folder.glob('*.png'))
+            counts[folder.name] = len(images)
+        return jsonify({'success': True, 'counts': counts})
+    except Exception as e:
+        logger.error(f"Error getting photo counts: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+
+@app.route('/api/clear-thumbnail-cache', methods=['POST'])
+@requires_auth
+def api_clear_thumbnail_cache():
+    """Clear the thumbnail cache directory."""
+    try:
+        cache_dir = Path.home() / '.thumbnails'
+        if cache_dir.exists():
+            import shutil
+            count = len(list(cache_dir.glob('*')))
+            shutil.rmtree(cache_dir)
+            cache_dir.mkdir(exist_ok=True)
+            logger.info(f"Cleared {count} cached thumbnails")
+            return jsonify({'success': True, 'cleared': count})
+        return jsonify({'success': True, 'cleared': 0})
+    except Exception as e:
+        logger.error(f"Error clearing thumbnail cache: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 @app.route('/api/image/<path:image_path>')
 @requires_auth
 def api_image(image_path):
@@ -462,6 +571,82 @@ def api_image(image_path):
                     return send_file(date_filepath, mimetype='image/jpeg')
     
     return jsonify({'error': 'Image not found'}), 404
+
+
+MODAL_IMAGE_SIZE = (1200, 1200)
+
+@app.route("/api/image-resized/<path:image_path>")
+@requires_auth
+def api_image_resized(image_path):
+    try:
+        filepath = (IMAGES_DIR / image_path).resolve()
+        if not filepath.is_relative_to(IMAGES_DIR.resolve()):
+            return jsonify({"error": "Invalid path"}), 403
+    except Exception:
+        return jsonify({"error": "Invalid path"}), 403
+    if not filepath.exists() and "/" not in image_path:
+        for date_folder in IMAGES_DIR.iterdir():
+            if date_folder.is_dir() and len(date_folder.name) == 10:
+                date_filepath = date_folder / image_path
+                if date_filepath.exists():
+                    filepath = date_filepath
+                    break
+    if filepath.exists() and filepath.suffix.lower() in [".jpeg", ".jpg"]:
+        try:
+            with Image.open(filepath) as img:
+                if img.mode in ("RGBA", "P"):
+                    img = img.convert("RGB")
+                img.thumbnail(MODAL_IMAGE_SIZE, Image.Resampling.LANCZOS)
+                buffer = BytesIO()
+                img.save(buffer, format="JPEG", quality=85)
+                buffer.seek(0)
+                return Response(buffer.getvalue(), mimetype="image/jpeg")
+        except Exception as e:
+            logger.error(f"Error resizing image {filepath}: {e}")
+            return send_file(filepath, mimetype="image/jpeg")
+    return jsonify({"error": "Image not found"}), 404
+
+@app.route("/api/image-metadata/<path:image_path>")
+@requires_auth
+def api_image_metadata(image_path):
+    try:
+        filepath = (IMAGES_DIR / image_path).resolve()
+        if not filepath.is_relative_to(IMAGES_DIR.resolve()):
+            return jsonify({"error": "Invalid path"}), 403
+    except Exception:
+        return jsonify({"error": "Invalid path"}), 403
+    if not filepath.exists() and "/" not in image_path:
+        for date_folder in IMAGES_DIR.iterdir():
+            if date_folder.is_dir() and len(date_folder.name) == 10:
+                date_filepath = date_folder / image_path
+                if date_filepath.exists():
+                    filepath = date_filepath
+                    break
+    if filepath.exists():
+        try:
+            stat = filepath.stat()
+            with Image.open(filepath) as img:
+                width, height = img.size
+                resized_w, resized_h = width, height
+                if width > MODAL_IMAGE_SIZE[0] or height > MODAL_IMAGE_SIZE[1]:
+                    ratio = min(MODAL_IMAGE_SIZE[0]/width, MODAL_IMAGE_SIZE[1]/height)
+                    resized_w = int(width * ratio)
+                    resized_h = int(height * ratio)
+                return jsonify({
+                    "original_width": width,
+                    "original_height": height,
+                    "display_width": resized_w,
+                    "display_height": resized_h,
+                    "file_size_bytes": stat.st_size,
+                    "file_size_mb": round(stat.st_size / (1024*1024), 2),
+                    "date_taken": datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+                    "filename": filepath.name
+                })
+        except Exception as e:
+            logger.error(f"Error getting metadata for {filepath}: {e}")
+            return jsonify({"error": str(e)}), 500
+    return jsonify({"error": "Image not found"}), 404
+
 
 @app.route('/api/restart', methods=['POST'])
 def api_restart():
@@ -784,6 +969,38 @@ def serve_identified_species_photo(species_folder, filename):
         logger.error(f"Error serving identified species photo: {e}")
         return "Error serving photo", 500
 
+@app.route("/identified_species_resized/<species_folder>/<filename>")
+def serve_identified_species_resized(species_folder, filename):
+    try:
+        photo_path = IMAGES_DIR / "IdentifiedSpecies" / species_folder / filename
+        if photo_path.exists():
+            with Image.open(photo_path) as img:
+                if img.mode in ("RGBA", "P"):
+                    img = img.convert("RGB")
+                img.thumbnail(MODAL_IMAGE_SIZE, Image.Resampling.LANCZOS)
+                buffer = BytesIO()
+                img.save(buffer, format="JPEG", quality=85)
+                buffer.seek(0)
+                return Response(buffer.getvalue(), mimetype="image/jpeg")
+        return "Photo not found", 404
+    except Exception as e:
+        logger.error(f"Error serving resized species photo: {e}")
+        return "Error", 500
+
+@app.route('/identified_species_thumb/<species_folder>/<filename>')
+def serve_identified_species_thumbnail(species_folder, filename):
+    """Serve thumbnail of photos from IdentifiedSpecies folder"""
+    try:
+        photo_path = IMAGES_DIR / "IdentifiedSpecies" / species_folder / filename
+        if photo_path.exists():
+            thumb_bytes = get_or_create_thumbnail(photo_path)
+            return Response(thumb_bytes, mimetype='image/jpeg')
+        else:
+            return "Photo not found", 404
+    except Exception as e:
+        logger.error(f"Error serving identified species thumbnail: {e}")
+        return "Error serving thumbnail", 500
+
 def find_available_port(start_port=8080, max_attempts=10):
     """Find an available port starting from start_port"""
     import socket
@@ -796,6 +1013,129 @@ def find_available_port(start_port=8080, max_attempts=10):
             continue
     return None
 
+
+@app.route('/api/email-image', methods=['POST'])
+def api_email_image():
+    """Email a specific image to the configured recipient"""
+    try:
+        data = request.get_json()
+        image_path = data.get('image_path')
+
+        if not image_path:
+            return jsonify({'success': False, 'error': 'No image path provided'}), 400
+
+        # Construct full path
+        full_path = IMAGES_DIR / image_path
+        if not full_path.exists():
+            return jsonify({'success': False, 'error': 'Image not found'}), 404
+
+        # Load email configuration
+        config = load_config()
+        email_config = config.get('email', {})
+
+        if not email_config.get('sender') or not email_config.get('password'):
+            return jsonify({'success': False, 'error': 'Email not configured'}), 400
+
+        # Get recipient
+        receivers = email_config.get('receivers', {})
+        recipient = receivers.get('primary', email_config.get('sender'))
+
+        # Get species info for the image
+        species_info = get_species_for_photo(full_path.name)
+        species_name = species_info.get('common_name', 'Bird') if species_info else 'Bird'
+
+        # Send email directly without importing email_handler
+        subject = f"Bird Photo: {species_name}"
+        body = f"Photo captured: {full_path.name}\nSpecies: {species_name}"
+
+        # Create message
+        msg = MIMEMultipart()
+        msg['Subject'] = subject
+        msg['From'] = email_config['sender']
+        msg['To'] = recipient
+        msg.attach(MIMEText(body, 'plain'))
+
+        # Attach the image
+        with open(full_path, 'rb') as f:
+            img = MIMEImage(f.read())
+            img.add_header('Content-Disposition', 'attachment', filename=full_path.name)
+            msg.attach(img)
+
+        # Send email via SMTP
+        smtp_server = email_config.get('smtp_server', 'smtp.gmail.com')
+        smtp_port = email_config.get('smtp_port', 465)
+
+        with smtplib.SMTP_SSL(smtp_server, smtp_port) as server:
+            server.login(email_config['sender'], email_config['password'])
+            server.send_message(msg)
+
+        logger.info(f"Email sent to {recipient}")
+        return jsonify({'success': True, 'message': f'Email sent to {recipient}'})
+
+    except Exception as e:
+        logger.error(f"Error sending email: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/email-species-image', methods=['POST'])
+@requires_auth
+def api_email_species_image():
+    """Email a species image with species name in subject"""
+    try:
+        data = request.get_json()
+        image_path = data.get('image_path')
+        species_name = data.get('species_name', 'Bird')
+
+        if not image_path:
+            return jsonify({'success': False, 'error': 'No image path provided'}), 400
+
+        # Construct full path
+        full_path = IMAGES_DIR / image_path
+        if not full_path.exists():
+            return jsonify({'success': False, 'error': 'Image not found'}), 404
+
+        # Load email configuration
+        config = load_config()
+        email_config = config.get('email', {})
+
+        if not email_config.get('sender') or not email_config.get('password'):
+            return jsonify({'success': False, 'error': 'Email not configured'}), 400
+
+        # Get recipient
+        receivers = email_config.get('receivers', {})
+        recipient = receivers.get('primary', email_config.get('sender'))
+
+        # Create email with species name in subject
+        subject = f"Bird Photo: {species_name}"
+        body = f"Species: {species_name}\nPhoto: {full_path.name}"
+
+        # Create message
+        msg = MIMEMultipart()
+        msg['Subject'] = subject
+        msg['From'] = email_config['sender']
+        msg['To'] = recipient
+        msg.attach(MIMEText(body, 'plain'))
+
+        # Attach the image
+        with open(full_path, 'rb') as f:
+            img = MIMEImage(f.read())
+            img.add_header('Content-Disposition', 'attachment', filename=full_path.name)
+            msg.attach(img)
+
+        # Send email via SMTP
+        smtp_server = email_config.get('smtp_server', 'smtp.gmail.com')
+        smtp_port = email_config.get('smtp_port', 465)
+
+        with smtplib.SMTP_SSL(smtp_server, smtp_port) as server:
+            server.login(email_config['sender'], email_config['password'])
+            server.send_message(msg)
+
+        logger.info(f"Species email sent to {recipient}: {species_name}")
+        return jsonify({'success': True, 'message': f'Email sent to {recipient}'})
+
+    except Exception as e:
+        logger.error(f"Error sending species email: {e}")
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/debug')
 @requires_auth

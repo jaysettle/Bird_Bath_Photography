@@ -3,14 +3,18 @@
 const STATS_REFRESH = 5000; // 5 seconds
 const IMAGES_REFRESH = 10000; // 10 seconds
 const LOGS_REFRESH = 3000; // 3 seconds
-const GALLERY_INITIAL_LIMIT = 30; // Initial load for most recent day
-const GALLERY_PAGE_LIMIT = 20;    // Subsequent batches while scrolling
+// Gallery load limits - controlled by dropdown
+function getGalleryLoadLimit() {
+    const select = document.getElementById('gallery-load-select');
+    return select ? parseInt(select.value) : 60;
+}
 const GALLERY_SCROLL_THRESHOLD = 250; // px from bottom to fetch more
 
 // State
 let isRestarting = false;
 let autoScroll = true;
-let currentTab = 'dashboard';
+window.currentTab = 'gallery';
+console.log('[INIT] window.currentTab initialized to:', window.currentTab);
 let autoRefreshPreview = true;
 let previewInterval = null;
 
@@ -20,7 +24,9 @@ const galleryState = {
     loading: false,
     allLoaded: false,
     totalLoaded: 0,
-    initialized: false
+    initialized: false,
+    allImages: [],  // Store all loaded images for navigation
+    currentIndex: 0  // Current image index in modal
 };
 
 // DOM elements
@@ -54,6 +60,11 @@ document.addEventListener('DOMContentLoaded', () => {
     loadLogs();
     loadCameraSettings();
     
+    // Initialize gallery as default tab
+    if(typeof ensureGalleryInitialized==="function") ensureGalleryInitialized();
+    if(typeof loadCalendar==="function") loadCalendar();
+    if(typeof startScrollCheck==="function") startScrollCheck();
+    
     // Set up auto-refresh (but not for images)
     setInterval(loadStats, STATS_REFRESH);
     setInterval(loadLogs, LOGS_REFRESH);
@@ -63,11 +74,31 @@ document.addEventListener('DOMContentLoaded', () => {
     setInterval(updateTimestamp, 1000);
     
     // Event listeners
-    elements.restartBtn.addEventListener('click', restartApp);
-    elements.refreshImagesBtn.addEventListener('click', refreshImages);
+    if (elements.restartBtn) elements.restartBtn.addEventListener('click', restartApp);
+    if (elements.refreshImagesBtn) elements.refreshImagesBtn.addEventListener('click', refreshImages);
     document.querySelector('.close').addEventListener('click', closeModal);
     elements.modal.addEventListener('click', (e) => {
         if (e.target === elements.modal) closeModal();
+    });
+
+    // Swipe gesture support for modal
+    elements.modalImg.addEventListener('touchstart', handleTouchStart, { passive: true });
+    elements.modalImg.addEventListener('touchend', handleTouchEnd, { passive: true });
+
+    // Mobile scroll detection
+    document.addEventListener('touchmove', () => {
+        if (window.currentTab === 'gallery') {
+            setTimeout(handleGalleryScroll, 100);
+        }
+    }, { passive: true });
+
+    // Keyboard navigation for modal
+    document.addEventListener('keydown', (e) => {
+        if (elements.modal.style.display === 'block') {
+            if (e.key === 'ArrowLeft') navigateGallery(-1);
+            else if (e.key === 'ArrowRight') navigateGallery(1);
+            else if (e.key === 'Escape') closeModal();
+        }
     });
     
     // Tab navigation
@@ -75,12 +106,30 @@ document.addEventListener('DOMContentLoaded', () => {
         btn.addEventListener('click', () => switchTab(btn.dataset.tab));
     });
 
+    // Gallery load dropdown - refresh gallery when changed
+    const galleryLoadSelect = document.getElementById('gallery-load-select');
+    if (galleryLoadSelect) {
+        galleryLoadSelect.addEventListener('change', () => {
+            refreshGallery();
+        });
+    }
+
     if (elements.galleryRefreshBtn) {
         elements.galleryRefreshBtn.addEventListener('click', refreshGallery);
     }
 
+    document.addEventListener('scroll', handleGalleryScroll, { passive: true, capture: true });
     window.addEventListener('scroll', handleGalleryScroll, { passive: true });
     
+    
+    // Check URL hash for direct tab navigation
+    if (window.location.hash) {
+        const tabName = window.location.hash.slice(1); // Remove #
+        if (tabName === 'gallery' || tabName === 'dashboard') {
+            switchTab(tabName);
+        }
+    }
+
     // Autoscroll toggle
     const autoscrollToggle = document.getElementById('autoscroll-toggle');
     autoscrollToggle.addEventListener('change', (e) => {
@@ -127,7 +176,7 @@ async function loadImages() {
         
         elements.imagesGrid.innerHTML = images.map(img => `
             <div class="image-item" onclick="openImage('${img.rel_path || img.filename}', '${img.timestamp}')">
-                <img src="/api/image/${img.rel_path || img.filename}" alt="Bird capture" loading="lazy">
+                <img src="/api/thumbnail/${img.rel_path || img.filename}" alt="Bird capture" loading="lazy">
                 <div class="image-timestamp">${formatTime(img.timestamp)}</div>
             </div>
         `).join('');
@@ -144,6 +193,8 @@ function resetGalleryState() {
     galleryState.allLoaded = false;
     galleryState.totalLoaded = 0;
     galleryState.initialized = false;
+    galleryState.allImages = [];
+    galleryState.currentIndex = 0;
 
     if (elements.galleryGrid) {
         elements.galleryGrid.innerHTML = '';
@@ -163,6 +214,8 @@ function ensureGalleryInitialized() {
         loadGallery({ initial: true });
         galleryState.initialized = true;
     }
+    // Setup intersection observer for infinite scroll
+    setTimeout(setupGalleryObserver, 500);
 }
 
 function ensureDateSection(dateStr) {
@@ -174,7 +227,10 @@ function ensureDateSection(dateStr) {
         section.dataset.galleryDate = dateStr;
 
         const header = document.createElement('h3');
-        header.textContent = dateStr;
+        header.innerHTML = `<span class="collapse-icon">▼</span> ${dateStr} <span class="day-photo-count"></span>`;
+        header.addEventListener('click', () => {
+            section.classList.toggle('collapsed');
+        });
         section.appendChild(header);
 
         const grid = document.createElement('div');
@@ -186,18 +242,39 @@ function ensureDateSection(dateStr) {
     return section.querySelector('.gallery-day-grid');
 }
 
+// Update photo count for a day section
+function updateDayPhotoCount(dateStr) {
+    const section = document.querySelector(`[data-gallery-date="${dateStr}"]`);
+    if (section) {
+        const count = section.querySelectorAll('.image-item').length;
+        const countSpan = section.querySelector('.day-photo-count');
+        if (countSpan) {
+            countSpan.textContent = `(${count} photos)`;
+        }
+    }
+}
+
 function appendGalleryImages(dateStr, images) {
     const grid = ensureDateSection(dateStr);
     if (!grid || !Array.isArray(images)) return;
 
     const fragment = document.createDocumentFragment();
     images.forEach(img => {
+        // Store image in gallery state for navigation
+        const imageData = {
+            path: img.rel_path || img.filename,
+            timestamp: img.timestamp,
+            date: dateStr
+        };
+        galleryState.allImages.push(imageData);
+        const imageIndex = galleryState.allImages.length - 1;
+
         const item = document.createElement('div');
         item.className = 'image-item';
-        item.addEventListener('click', () => openImage(img.rel_path || img.filename, img.timestamp));
+        item.addEventListener('click', () => openGalleryImage(imageIndex));
 
         const imageEl = document.createElement('img');
-        imageEl.src = `/api/image/${img.rel_path || img.filename}`;
+        imageEl.src = `/api/thumbnail/${img.rel_path || img.filename}`;
         imageEl.alt = 'Bird capture';
         imageEl.loading = 'lazy';
 
@@ -211,6 +288,15 @@ function appendGalleryImages(dateStr, images) {
     });
 
     grid.appendChild(fragment);
+    // Update the photo count for this day
+    const daySection = grid.closest('.gallery-day');
+    if (daySection) {
+        const count = grid.querySelectorAll('.image-item').length;
+        const countSpan = daySection.querySelector('.day-photo-count');
+        if (countSpan) {
+            countSpan.textContent = `(${count} photos)`;
+        }
+    }
 }
 
 async function loadGallery({ initial = false } = {}) {
@@ -226,7 +312,7 @@ async function loadGallery({ initial = false } = {}) {
 
     try {
         const params = new URLSearchParams();
-        const limit = initial ? GALLERY_INITIAL_LIMIT : GALLERY_PAGE_LIMIT;
+        const limit = getGalleryLoadLimit();
         params.set('limit', limit);
 
         if (galleryState.currentDate) {
@@ -268,16 +354,20 @@ async function loadGallery({ initial = false } = {}) {
         }
 
         // Prepare state for next fetch
+        console.log('[GALLERY] API response - has_more:', data.has_more, 'next_date:', data.next_date, 'date:', data.date);
         if (data.has_more) {
             galleryState.currentDate = data.date;
             galleryState.offset = data.offset;
+            console.log('[GALLERY] More images for this date, offset:', data.offset);
         } else if (data.next_date) {
             galleryState.currentDate = data.next_date;
             galleryState.offset = 0;
+            console.log('[GALLERY] Moving to next date:', data.next_date);
         } else {
             galleryState.currentDate = null;
             galleryState.offset = 0;
             galleryState.allLoaded = true;
+            console.log('[GALLERY] No more dates - allLoaded = true');
         }
 
         // Automatically continue if current date had no images but a next date exists
@@ -295,6 +385,7 @@ async function loadGallery({ initial = false } = {}) {
         }
     } finally {
         galleryState.loading = false;
+        updateLoadMoreButton();
         if (shouldAutoLoadNext) {
             loadGallery();
         }
@@ -433,16 +524,221 @@ function updateAppStatus(isRunning) {
     }
 }
 
-// Open image in modal
+// Open image in modal (for non-gallery images like Recent Captures)
 function openImage(imagePath, timestamp) {
     elements.modal.style.display = 'block';
-    elements.modalImg.src = `/api/image/${imagePath}`;
-    elements.modalCaption.textContent = `Captured: ${formatTime(timestamp)}`;
+    
+    // Show loading indicator
+    const loadingEl = document.getElementById('modal-loading');
+    if (loadingEl) loadingEl.classList.add('visible');
+    elements.modalImg.style.opacity = '0.3';
+    
+    // Hide loading when image loads
+    elements.modalImg.onload = function() {
+        if (loadingEl) loadingEl.classList.remove('visible');
+        elements.modalImg.style.opacity = '1';
+    };
+    elements.modalImg.src = `/api/image-resized/${imagePath}`;
+    elements.modalCaption.innerHTML = `Captured: ${formatTime(timestamp)}`;
+    // Hide nav buttons for non-gallery images
+    hideModalNav();
+}
+
+// Open gallery image with navigation support
+function openGalleryImage(index) {
+    if (index < 0 || index >= galleryState.allImages.length) return;
+
+    galleryState.currentIndex = index;
+    const img = galleryState.allImages[index];
+
+    elements.modal.style.display = 'block';
+    
+    // Show loading indicator
+    const loadingEl = document.getElementById('modal-loading');
+    if (loadingEl) loadingEl.classList.add('visible');
+    elements.modalImg.style.opacity = '0.3';
+    
+    // Hide loading when image loads
+    elements.modalImg.onload = function() {
+        if (loadingEl) loadingEl.classList.remove('visible');
+        elements.modalImg.style.opacity = '1';
+    };
+    elements.modalImg.src = `/api/image-resized/${img.path}`;
+    updateModalCaption(img);
+    showModalNav();
+    updateNavButtons();
+}
+
+// Update modal caption with image info and email button
+
+// Update modal caption with image info, metadata, and email button
+async function updateModalCaption(img) {
+    const emailBtn = `<button class="modal-email-btn" onclick="shareFullImage()">📧 Email Full Size</button>`;
+    
+    // Show loading state first
+    elements.modalCaption.innerHTML = `
+        <div class="modal-info">
+            <span>Captured: ${formatTime(img.timestamp)}</span>
+            <span class="metadata-loading">Loading metadata...</span>
+            ${emailBtn}
+        </div>
+    `;
+    
+    // Fetch metadata
+    try {
+        const response = await fetch(`/api/image-metadata/${img.path}`, {
+            headers: { "Authorization": "Basic " + btoa("birds:birdwatcher") }
+        });
+        if (response.ok) {
+            const meta = await response.json();
+            elements.modalCaption.innerHTML = `
+                <div class="modal-info">
+                    <span>Captured: ${formatTime(img.timestamp)}</span>
+                    <span class="metadata">Original: ${meta.original_width}x${meta.original_height} (${meta.file_size_mb}MB)</span>
+                    <span class="metadata">Showing: ${meta.display_width}x${meta.display_height}</span>
+                    ${emailBtn}
+                </div>
+            `;
+        }
+    } catch (e) {
+        console.log("Could not fetch metadata:", e);
+    }
+}
+
+
+// Show navigation buttons
+function showModalNav() {
+    let navContainer = document.querySelector('.modal-nav');
+    if (!navContainer) {
+        navContainer = document.createElement('div');
+        navContainer.className = 'modal-nav';
+        navContainer.innerHTML = `
+            <button class="nav-btn nav-prev" onclick="navigateGallery(-1)">‹</button>
+            <button class="nav-btn nav-next" onclick="navigateGallery(1)">›</button>
+        `;
+        elements.modal.querySelector('.modal-content').appendChild(navContainer);
+    }
+    navContainer.style.display = 'flex';
+}
+
+// Hide navigation buttons
+function hideModalNav() {
+    const navContainer = document.querySelector('.modal-nav');
+    if (navContainer) {
+        navContainer.style.display = 'none';
+    }
+}
+
+// Update nav button states
+function updateNavButtons() {
+    const prevBtn = document.querySelector('.nav-prev');
+    const nextBtn = document.querySelector('.nav-next');
+    if (prevBtn) prevBtn.disabled = galleryState.currentIndex <= 0;
+    if (nextBtn) nextBtn.disabled = galleryState.currentIndex >= galleryState.allImages.length - 1;
+}
+
+// Navigate gallery
+function navigateGallery(direction) {
+    const newIndex = galleryState.currentIndex + direction;
+    if (newIndex >= 0 && newIndex < galleryState.allImages.length) {
+        openGalleryImage(newIndex);
+    }
+}
+
+// Email current image
+async function emailCurrentImage() {
+    const img = galleryState.allImages[galleryState.currentIndex];
+    if (!img) return;
+
+    const emailBtn = document.querySelector('.modal-email-btn');
+    if (emailBtn) {
+        emailBtn.disabled = true;
+        emailBtn.textContent = 'Sending...';
+    }
+
+    try {
+        const response = await fetch('/api/email-image', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image_path: img.path })
+        });
+        const data = await response.json();
+
+        if (data.success) {
+            if (emailBtn) {
+                emailBtn.textContent = '✓ Sent!';
+                setTimeout(() => {
+                    emailBtn.textContent = '📧 Email';
+                    emailBtn.disabled = false;
+                }, 2000);
+            }
+        } else {
+            throw new Error(data.error || 'Email failed');
+        }
+    } catch (error) {
+        alert('Failed to send email: ' + error.message);
+        if (emailBtn) {
+            emailBtn.textContent = '📧 Email';
+            emailBtn.disabled = false;
+        }
+    }
+}
+async function shareFullImage() {
+    const img = galleryState.allImages[galleryState.currentIndex];
+    if (!img) return;
+    const btn = document.querySelector('.modal-email-btn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Loading...'; }
+    try {
+        const response = await fetch('/api/image/' + img.path);
+        const blob = await response.blob();
+        const filename = img.path.split('/').pop() || 'bird_photo.jpg';
+        const file = new File([blob], filename, { type: blob.type });
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+            await navigator.share({ files: [file], title: 'Bird Photo', text: 'Check out this bird photo!' });
+        } else {
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = filename;
+            a.click();
+            URL.revokeObjectURL(a.href);
+            alert('Image downloaded. Please attach it to your email manually.');
+        }
+    } catch (err) { if (err.name !== 'AbortError') console.error('Share failed:', err); }
+    if (btn) { btn.disabled = false; btn.textContent = '📧 Email Full Size'; }
 }
 
 // Close modal
 function closeModal() {
     elements.modal.style.display = 'none';
+    hideModalNav();
+}
+
+// Handle swipe gestures on modal
+let touchStartX = 0;
+let touchEndX = 0;
+
+function handleTouchStart(e) {
+    touchStartX = e.changedTouches[0].screenX;
+}
+
+function handleTouchEnd(e) {
+    touchEndX = e.changedTouches[0].screenX;
+    handleSwipe();
+}
+
+function handleSwipe() {
+    const swipeThreshold = 50;
+    const diff = touchStartX - touchEndX;
+
+    if (Math.abs(diff) > swipeThreshold) {
+        if (diff > 0) {
+            // Swipe left - next image
+            navigateGallery(1);
+        } else {
+            // Swipe right - previous image
+            navigateGallery(-1);
+        }
+    }
 }
 
 // Utility functions
@@ -480,7 +776,7 @@ function escapeHtml(unsafe) {
 
 // Tab switching
 function switchTab(tabName) {
-    currentTab = tabName;
+    window.currentTab = tabName;
     
     // Update tab buttons
     document.querySelectorAll('.tab-btn').forEach(btn => {
@@ -495,6 +791,11 @@ function switchTab(tabName) {
     // Load camera settings when switching to camera tab
     if (tabName === 'camera') {
         loadCameraSettings();
+    
+    // Initialize gallery as default tab
+    if(typeof ensureGalleryInitialized==="function") ensureGalleryInitialized();
+    if(typeof loadCalendar==="function") loadCalendar();
+    if(typeof startScrollCheck==="function") startScrollCheck();
         startPreviewRefresh();
     } else {
         stopPreviewRefresh();
@@ -505,15 +806,114 @@ function switchTab(tabName) {
     }
 }
 
+
+// Timer-based scroll check for infinite scroll (works on all browsers)
+let scrollCheckInterval = null;
+
+function startScrollCheck() {
+    scrollCheckInterval = setInterval(() => {
+        const galleryVisible = document.getElementById('gallery-tab').style.display !== 'none';
+        if (!galleryVisible || galleryState.loading || galleryState.allLoaded) return;
+
+        const scrollTop = window.pageYOffset || document.documentElement.scrollTop || document.body.scrollTop || 0;
+        const scrollHeight = Math.max(
+            document.body.scrollHeight,
+            document.documentElement.scrollHeight,
+            document.body.offsetHeight,
+            document.documentElement.offsetHeight
+        );
+        const clientHeight = window.innerHeight || document.documentElement.clientHeight;
+        const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+
+        if (distanceFromBottom < 600) {
+            console.log('[TIMER] Near bottom, loading more... distance:', distanceFromBottom);
+            loadGallery();
+        }
+    }, 500);
+    console.log('[TIMER] Scroll check started');
+}
+
+function stopScrollCheck() {
+    if (scrollCheckInterval) {
+        clearInterval(scrollCheckInterval);
+        scrollCheckInterval = null;
+        console.log('[TIMER] Scroll check stopped');
+    }
+}
+
 function handleGalleryScroll() {
-    if (currentTab !== 'gallery' || galleryState.loading || galleryState.allLoaded) return;
+    const galleryVisible = document.getElementById('gallery-tab').style.display !== 'none';
+        if (!galleryVisible || galleryState.loading || galleryState.allLoaded) return;
 
-    const scrollPosition = window.innerHeight + window.scrollY;
-    const triggerPoint = document.body.offsetHeight - GALLERY_SCROLL_THRESHOLD;
+    // Check if we're near the bottom of the page
+    const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+    const scrollHeight = document.documentElement.scrollHeight;
+    const clientHeight = document.documentElement.clientHeight;
+    const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
 
-    if (scrollPosition >= triggerPoint) {
+    if (distanceFromBottom < 500) {
+        console.log('[SCROLL] Near bottom, loading more... distance:', distanceFromBottom);
         loadGallery();
     }
+}
+
+
+// Update Load More button state
+function updateLoadMoreButton() {
+    const btn = document.getElementById('load-more-btn');
+    if (!btn) return;
+
+    if (galleryState.allLoaded) {
+        btn.textContent = 'No more photos';
+        btn.disabled = true;
+        btn.style.opacity = '0.5';
+    } else if (galleryState.loading) {
+        btn.textContent = 'Loading...';
+        btn.disabled = true;
+    } else {
+        btn.textContent = 'Load More';
+        btn.disabled = false;
+        btn.style.opacity = '1';
+    }
+}
+
+// Intersection Observer for reliable infinite scroll
+let galleryObserver = null;
+
+function setupGalleryObserver() {
+    console.log('[OBSERVER] Setting up gallery observer...');
+
+    // Use existing trigger element from HTML
+    const galleryLoadTrigger = document.getElementById('gallery-load-trigger');
+    if (!galleryLoadTrigger) {
+        console.log('[OBSERVER] No trigger element found!');
+        return;
+    }
+
+    // Disconnect old observer if exists
+    if (galleryObserver) {
+        galleryObserver.disconnect();
+    }
+
+    // Create new observer
+    galleryObserver = new IntersectionObserver((entries) => {
+        entries.forEach(entry => {
+            if (entry.isIntersecting) {
+                console.log('[OBSERVER] Trigger visible - tab:', window.currentTab, 'loading:', galleryState.loading, 'allLoaded:', galleryState.allLoaded);
+                if (window.currentTab === 'gallery' && !galleryState.loading && !galleryState.allLoaded) {
+                    console.log('[OBSERVER] Loading more...');
+                    loadGallery();
+                }
+            }
+        });
+    }, {
+        root: null,
+        rootMargin: '400px',
+        threshold: 0
+    });
+
+    galleryObserver.observe(galleryLoadTrigger);
+    console.log('[OBSERVER] Observer attached');
 }
 
 // Load camera settings
@@ -668,7 +1068,7 @@ function setupCameraPreview() {
             autoRefreshPreview = !autoRefreshPreview;
             autoToggle.classList.toggle('active', autoRefreshPreview);
             
-            if (autoRefreshPreview && currentTab === 'camera') {
+            if (autoRefreshPreview && window.currentTab === 'camera') {
                 startPreviewRefresh();
             } else {
                 stopPreviewRefresh();
@@ -735,3 +1135,284 @@ function updateTimestamp() {
         timestampEl.textContent = timeString;
     }
 }
+
+// Calendar state and functions
+const calendarState = {
+    currentMonth: new Date().getMonth(),
+    currentYear: new Date().getFullYear(),
+    photoCounts: {}
+};
+
+async function loadPhotoCountsByDate() {
+    try {
+        const response = await fetch('/api/photo-counts');
+        const data = await response.json();
+        if (data.success && data.counts) {
+            calendarState.photoCounts = data.counts;
+            renderCalendar();
+        }
+    } catch (error) {
+        console.error('Error loading photo counts:', error);
+    }
+}
+
+function renderCalendar() {
+    const calGrid = document.getElementById('calendar-grid');
+    const monthYearSpan = document.getElementById('cal-month-year');
+    if (!calGrid || !monthYearSpan) return;
+
+    const months = ['January', 'February', 'March', 'April', 'May', 'June',
+                    'July', 'August', 'September', 'October', 'November', 'December'];
+    const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+    monthYearSpan.textContent = `${months[calendarState.currentMonth]} ${calendarState.currentYear}`;
+
+    const firstDay = new Date(calendarState.currentYear, calendarState.currentMonth, 1).getDay();
+    const daysInMonth = new Date(calendarState.currentYear, calendarState.currentMonth + 1, 0).getDate();
+    const today = new Date();
+
+    let html = days.map(d => `<div class="cal-day-header">${d}</div>`).join('');
+
+    // Empty cells before first day
+    for (let i = 0; i < firstDay; i++) {
+        html += '<div class="cal-day empty"></div>';
+    }
+
+    // Days of month
+    for (let day = 1; day <= daysInMonth; day++) {
+        const dateStr = `${calendarState.currentYear}-${String(calendarState.currentMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+        const hasPhotos = calendarState.photoCounts[dateStr] > 0;
+        const isToday = today.getDate() === day &&
+                        today.getMonth() === calendarState.currentMonth &&
+                        today.getFullYear() === calendarState.currentYear;
+
+        let classes = 'cal-day';
+        if (hasPhotos) classes += ' has-photos';
+        if (isToday) classes += ' today';
+
+        const count = calendarState.photoCounts[dateStr] || 0;
+        html += `<div class="${classes}" data-date="${dateStr}" onclick="jumpToDate('${dateStr}')">
+            <span class="day-num">${day}</span>
+            ${count > 0 ? `<span class="bird-count">${count}</span>` : ''}
+        </div>`;
+    }
+
+    calGrid.innerHTML = html;
+}
+
+function jumpToDate(dateStr) {
+    if (!calendarState.photoCounts[dateStr]) return;
+
+    // Reset gallery state but keep allLoaded false so we can continue to next days
+    galleryState.currentDate = dateStr;
+    galleryState.offset = 0;
+    galleryState.loading = false;
+    galleryState.allLoaded = false;  // Allow flowing to next days
+    galleryState.totalLoaded = 0;
+    galleryState.initialized = true;
+    galleryState.allImages = [];
+    galleryState.currentIndex = 0;
+
+    // Clear existing gallery
+    if (elements.galleryGrid) {
+        elements.galleryGrid.innerHTML = '';
+    }
+    if (elements.galleryEmpty) {
+        elements.galleryEmpty.textContent = 'Loading...';
+        elements.galleryEmpty.style.display = 'block';
+    }
+    if (elements.galleryCount) {
+        elements.galleryCount.textContent = '0 photos';
+    }
+
+    // Load from this date (will continue to next days on scroll)
+    loadGallery({ initial: true });
+
+    // Setup observer after load
+    setTimeout(setupGalleryObserver, 500);
+
+    // Scroll to gallery
+    document.getElementById('gallery-grid')?.scrollIntoView({ behavior: 'smooth' });
+}
+
+function changeMonth(delta) {
+    calendarState.currentMonth += delta;
+    if (calendarState.currentMonth > 11) {
+        calendarState.currentMonth = 0;
+        calendarState.currentYear++;
+    } else if (calendarState.currentMonth < 0) {
+        calendarState.currentMonth = 11;
+        calendarState.currentYear--;
+    }
+    renderCalendar();
+}
+
+// Collapse all toggle
+let allCollapsed = false;
+function toggleCollapseAll() {
+    allCollapsed = !allCollapsed;
+    document.querySelectorAll('.gallery-day').forEach(day => {
+        if (allCollapsed) {
+            day.classList.add('collapsed');
+        } else {
+            day.classList.remove('collapsed');
+        }
+    });
+    const btn = document.getElementById('collapse-all-btn');
+    if (btn) {
+        btn.textContent = allCollapsed ? '▶ All' : '▼ All';
+    }
+}
+
+// Initialize calendar controls
+document.addEventListener('DOMContentLoaded', () => {
+    const calPrev = document.getElementById('cal-prev');
+    const calNext = document.getElementById('cal-next');
+    const collapseAllBtn = document.getElementById('collapse-all-btn');
+
+    if (calPrev) calPrev.addEventListener('click', () => changeMonth(-1));
+    if (calNext) calNext.addEventListener('click', () => changeMonth(1));
+    if (collapseAllBtn) collapseAllBtn.addEventListener('click', toggleCollapseAll);
+
+    // Load calendar data when gallery tab is shown
+    loadPhotoCountsByDate();
+});
+
+
+// Hamburger menu functionality
+document.addEventListener('DOMContentLoaded', () => {
+    const hamburgerBtn = document.getElementById('hamburger-btn');
+    const settingsDropdown = document.getElementById('settings-dropdown');
+    const restartAppMenu = document.getElementById('restart-app-menu');
+    const clearCacheMenu = document.getElementById('clear-cache-menu');
+    const toggleNotificationsMenu = document.getElementById('toggle-notifications-menu');
+    const notificationsLabel = document.getElementById('notifications-label');
+
+    // Toggle dropdown
+    if (hamburgerBtn && settingsDropdown) {
+        hamburgerBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            settingsDropdown.classList.toggle('hidden');
+        });
+
+        // Close dropdown when clicking outside
+        document.addEventListener('click', (e) => {
+            if (!settingsDropdown.contains(e.target) && e.target !== hamburgerBtn) {
+                settingsDropdown.classList.add('hidden');
+            }
+        });
+    }
+
+    // Restart App from menu
+    if (restartAppMenu) {
+        restartAppMenu.addEventListener('click', async () => {
+            if (confirm('Restart the Bird Detection application?')) {
+                try {
+                    const response = await fetch('/api/restart', { method: 'POST' });
+                    const data = await response.json();
+                    if (data.success) {
+                        alert('Application is restarting...');
+                    } else {
+                        alert('Failed to restart: ' + (data.error || 'Unknown error'));
+                    }
+                } catch (error) {
+                    alert('Error restarting app: ' + error.message);
+                }
+            }
+            settingsDropdown.classList.add('hidden');
+        });
+    }
+
+    // Clear thumbnail cache
+    if (clearCacheMenu) {
+        clearCacheMenu.addEventListener('click', async () => {
+            if (confirm('Clear all thumbnail cache? This will free up disk space.')) {
+                try {
+                    const response = await fetch('/api/clear-thumbnail-cache', { method: 'POST' });
+                    const data = await response.json();
+                    if (data.success) {
+                        alert(`Cleared ${data.cleared || 0} cached thumbnails`);
+                    } else {
+                        alert('Failed to clear cache: ' + (data.error || 'Unknown error'));
+                    }
+                } catch (error) {
+                    alert('Error clearing cache: ' + error.message);
+                }
+            }
+            settingsDropdown.classList.add('hidden');
+        });
+    }
+
+    // Toggle notifications
+    if (toggleNotificationsMenu && notificationsLabel) {
+        // Check current permission
+        const updateNotificationLabel = () => {
+            if ('Notification' in window) {
+                if (Notification.permission === 'granted') {
+                    notificationsLabel.textContent = 'Notifications Enabled';
+                } else if (Notification.permission === 'denied') {
+                    notificationsLabel.textContent = 'Notifications Blocked';
+                } else {
+                    notificationsLabel.textContent = 'Enable Notifications';
+                }
+            } else {
+                notificationsLabel.textContent = 'Notifications Not Supported';
+            }
+        };
+        updateNotificationLabel();
+
+        toggleNotificationsMenu.addEventListener('click', async () => {
+            if ('Notification' in window && Notification.permission === 'default') {
+                const permission = await Notification.requestPermission();
+                updateNotificationLabel();
+            }
+            settingsDropdown.classList.add('hidden');
+        });
+    }
+
+    // SUPER DEBUG INFINITE SCROLL
+    console.log('[INIT] Setting up infinite scroll - window.currentTab is:', window.currentTab);
+
+    // Log window.currentTab every 2 seconds regardless
+    setInterval(() => {
+        console.log('[TAB-CHECK] window.currentTab =', window.currentTab, 'type:', typeof window.currentTab);
+    }, 2000);
+
+    let debugCounter = 0;
+    setInterval(() => {
+        debugCounter++;
+
+        const pct = Math.round((window.scrollY + window.innerHeight) / document.body.scrollHeight * 100);
+
+        // Always log current state
+        console.log('[SCROLL #' + debugCounter + '] tab=' + window.currentTab +
+                    ' loading=' + galleryState.loading +
+                    ' allLoaded=' + galleryState.allLoaded +
+                    ' pct=' + pct + '%');
+
+        // Check if on gallery
+        if (window.currentTab !== 'gallery') {
+            return; // Silent skip
+        }
+
+        console.log('[SCROLL] On gallery tab! Checking conditions...');
+
+        if (galleryState.loading) {
+            console.log('[SCROLL] Skip - loading');
+            return;
+        }
+        if (galleryState.allLoaded) {
+            console.log('[SCROLL] Skip - allLoaded');
+            return;
+        }
+
+        if (pct > 70) {
+            console.log('[SCROLL] *** LOADING MORE *** pct=' + pct);
+            loadGallery();
+        } else {
+            console.log('[SCROLL] Not at 70% yet, pct=' + pct);
+        }
+    }, 1000);
+
+    console.log('[INIT] Infinite scroll started');
+});

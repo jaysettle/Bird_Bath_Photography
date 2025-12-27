@@ -14,85 +14,85 @@
             gap: 1rem;
             padding: 1rem;
         }
-        
+
         .species-card {
             background-color: var(--bg-card);
             border-radius: 12px;
             padding: 1rem;
             border: 1px solid var(--border);
         }
-        
+
         .species-header {
             display: flex;
             justify-content: space-between;
             align-items: start;
             margin-bottom: 1rem;
         }
-        
+
         .species-name {
             flex: 1;
         }
-        
+
         .species-name h3 {
             font-size: 1.25rem;
             margin: 0;
             color: var(--text-primary);
         }
-        
+
         .species-name .scientific {
             font-style: italic;
             color: var(--text-secondary);
             font-size: 0.875rem;
         }
-        
+
         .species-badge {
             padding: 0.25rem 0.5rem;
             border-radius: 4px;
             font-size: 0.75rem;
             font-weight: 600;
         }
-        
+
         .badge-rare {
             background-color: var(--warning);
             color: white;
         }
-        
+
         .badge-common {
             background-color: var(--success);
             color: white;
         }
-        
+
         .species-stats {
             display: grid;
             grid-template-columns: 1fr 1fr;
             gap: 0.5rem;
             margin-bottom: 1rem;
         }
-        
+
         .stat-item {
             background-color: var(--bg-secondary);
             padding: 0.5rem;
             border-radius: 8px;
             text-align: center;
         }
-        
+
         .stat-value {
             font-size: 1.5rem;
             font-weight: 600;
             color: var(--accent);
         }
-        
+
         .stat-label {
             font-size: 0.75rem;
             color: var(--text-secondary);
         }
-        
+
         .species-info {
             font-size: 0.875rem;
             line-height: 1.5;
             color: var(--text-secondary);
         }
-        
+
         .fun-fact {
             background-color: var(--bg-secondary);
             padding: 0.75rem;
@@ -100,7 +100,7 @@
             margin-top: 0.5rem;
             font-style: italic;
         }
-        
+
         .conservation-status {
             display: inline-block;
             padding: 0.25rem 0.5rem;
@@ -109,23 +109,23 @@
             font-weight: 600;
             margin-top: 0.5rem;
         }
-        
+
         .status-LC { background-color: #4caf50; color: white; }
         .status-NT { background-color: #8bc34a; color: white; }
         .status-VU { background-color: #ffeb3b; color: black; }
         .status-EN { background-color: #ff9800; color: white; }
         .status-CR { background-color: #f44336; color: white; }
-        
+
         .species-photos {
             margin: 1rem 0;
         }
-        
+
         .photo-grid {
             display: grid;
             grid-template-columns: repeat(3, 1fr);
             gap: 0.5rem;
         }
-        
+
         .species-thumb {
             width: 100%;
             aspect-ratio: 4/3;
@@ -133,6 +133,197 @@
             border-radius: 4px;
             background-color: var(--bg-card);
         }
+
+        /* Modal styles */
+        .species-modal {
+            display: none;
+            position: fixed;
+            z-index: 9999;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.95);
+            overflow: hidden;
+        }
+
+        .species-modal.open {
+            display: block;
+        }
+
+        body.modal-open {
+            overflow: hidden;
+            position: fixed;
+            width: 100%;
+            height: 100%;
+        }
+
+        .modal-close {
+            position: fixed;
+            top: 15px;
+            right: 20px;
+            color: #fff;
+            font-size: 40px;
+            font-weight: bold;
+            cursor: pointer;
+            z-index: 10001;
+            width: 50px;
+            height: 50px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: rgba(0,0,0,0.5);
+            border-radius: 50%;
+        }
+
+        .modal-close:hover {
+            color: #ccc;
+            background: rgba(0,0,0,0.8);
+        }
+
+        .modal-content {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 60px 80px;
+            box-sizing: border-box;
+        }
+
+        .modal-img {
+            max-width: 100%;
+            max-height: 70vh;
+            object-fit: contain;
+            user-select: none;
+            -webkit-user-drag: none;
+        }
+
+        .modal-caption {
+            color: #fff;
+            text-align: center;
+            padding: 15px;
+            font-size: 1.2rem;
+            font-weight: 500;
+        }
+
+        /* Arrow buttons */
+        .modal-nav-btn {
+            position: fixed;
+            top: 50%;
+            transform: translateY(-50%);
+            color: #fff;
+            font-size: 60px;
+            font-weight: bold;
+            cursor: pointer;
+            z-index: 10001;
+            width: 60px;
+            height: 80px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: rgba(0,0,0,0.5);
+            border: none;
+            border-radius: 8px;
+            user-select: none;
+            transition: background 0.2s;
+        }
+
+        .modal-nav-btn:hover {
+            background: rgba(0,0,0,0.8);
+        }
+
+        .modal-nav-btn:active {
+            background: rgba(255,255,255,0.2);
+        }
+
+        .modal-nav-btn.prev {
+            left: 10px;
+        }
+
+        .modal-nav-btn.next {
+            right: 10px;
+        }
+
+        .modal-nav-btn.disabled {
+            color: #444;
+            cursor: default;
+            background: rgba(0,0,0,0.3);
+        }
+
+        .modal-controls {
+            display: flex;
+            gap: 15px;
+            margin-top: 10px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+
+        .modal-btn {
+            background-color: #2196F3;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .modal-btn:hover {
+            background-color: #1976D2;
+        }
+
+        .modal-btn:disabled {
+            background-color: #666;
+            cursor: not-allowed;
+        }
+
+        .modal-btn.email-btn {
+            background-color: #4CAF50;
+        }
+
+        .modal-btn.email-btn:hover {
+            background-color: #388E3C;
+        }
+
+        .modal-counter {
+            color: #aaa;
+            font-size: 0.9rem;
+        }
+
+        .swipe-hint {
+            color: #666;
+            font-size: 0.8rem;
+            margin-top: 10px;
+        }
+
+        @media (max-width: 768px) {
+            .modal-nav-btn {
+                width: 45px;
+                height: 60px;
+                font-size: 40px;
+            }
+            .modal-content {
+                padding: 50px 50px;
+            }
+            .modal-close {
+                top: 10px;
+                right: 10px;
+                font-size: 30px;
+                width: 40px;
+                height: 40px;
+            }
+        }
+            .species-loading { display: none; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; color: white; z-index: 10; }
+        .species-loading.visible { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+        .loading-spinner { width: 40px; height: 40px; border: 3px solid rgba(255,255,255,0.3); border-top-color: white; border-radius: 50%; animation: spin 1s linear infinite; }
+        .email-options { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+        /* Pinch-to-zoom */ .modal-img-container { position: relative; width: 100%; height: calc(100% - 120px); overflow: hidden; touch-action: none; display: flex; align-items: center; justify-content: center; } .modal-img-container img { max-width: 100%; max-height: 100%; object-fit: contain; transform-origin: center center; transition: transform 0.1s ease-out; user-select: none; -webkit-user-select: none; } .modal-img-container.zoomed { cursor: move; } .modal-img-container.zoomed img { max-width: none; max-height: none; }
     </style>
 </head>
 <body>
@@ -143,10 +334,14 @@
                 <h1>Bird Species Gallery</h1>
                 <div class="timestamp" id="current-time">00:00:00</div>
             </div>
-            <a href="/" class="action-btn secondary" style="padding: 0.5rem 1rem; text-decoration: none;">
-                Back to Dashboard
-            </a>
+            <!-- Removed back button -->
         </header>
+
+        <!-- Tab Navigation -->
+        <nav class="tabs">
+            <a href="/" class="tab-btn">Gallery</a>
+            <a href="/species" class="tab-btn active">Species</a>
+        </nav>
 
         <!-- Summary Stats -->
         <section class="stats" style="padding: 1rem;">
@@ -171,13 +366,120 @@
         </section>
     </div>
 
+    <!-- Image Modal -->
+    <div id="species-modal" class="species-modal">
+        <div class="modal-close" id="modal-close">&times;</div>
+        <button class="modal-nav-btn prev" id="nav-prev">&#10094;</button>
+        <button class="modal-nav-btn next" id="nav-next">&#10095;</button>
+        <div class="modal-content" id="modal-content">
+            <div id="species-loading" class="species-loading"><div class="loading-spinner"></div><span>Loading...</span></div>
+            <div id="species-img-container" class="modal-img-container"><img id="species-modal-img" class="modal-img" src="" alt=""></div>
+            <p id="species-modal-caption" class="modal-caption"></p>
+            <div class="modal-counter" id="modal-counter"></div>
+            <div class="modal-controls">
+                <div class="email-options">
+                <button class="modal-btn email-btn" id="share-btn" onclick="shareSpeciesImage()">
+                    <span>📧</span> Email Full Size
+                </button>
+                </div>
+            </div>
+            <div class="swipe-hint">Swipe left/right to navigate, down to close</div>
+        </div>
+    </div>
+
     <script>
+// Pinch-to-zoom functionality
+function initPinchZoom(container, img) {
+    let scale = 1, lastScale = 1, posX = 0, posY = 0, lastPosX = 0, lastPosY = 0;
+    let pinchStartDist = 0, isPinching = false, isDragging = false;
+    let startX = 0, startY = 0, touchStartTime = 0, lastTouchEnd = 0;
+
+    function resetZoom() {
+        scale = 1; lastScale = 1; posX = 0; posY = 0; lastPosX = 0; lastPosY = 0;
+        img.style.transform = 'translate(0px, 0px) scale(1)';
+        container.classList.remove('zoomed');
+    }
+    function updateTransform() {
+        img.style.transform = 'translate(' + posX + 'px, ' + posY + 'px) scale(' + scale + ')';
+        if (scale > 1) container.classList.add('zoomed');
+        else container.classList.remove('zoomed');
+    }
+    function getDistance(t) {
+        const dx = t[0].clientX - t[1].clientX, dy = t[0].clientY - t[1].clientY;
+        return Math.sqrt(dx*dx + dy*dy);
+    }
+
+    container.addEventListener('touchstart', function(e) {
+        if (e.touches.length === 2) {
+            e.preventDefault(); e.stopPropagation();
+            isPinching = true; pinchStartDist = getDistance(e.touches); lastScale = scale;
+        } else if (e.touches.length === 1) {
+            touchStartTime = Date.now(); startX = e.touches[0].clientX; startY = e.touches[0].clientY;
+            if (scale > 1) { isDragging = true; lastPosX = posX; lastPosY = posY; e.preventDefault(); }
+        }
+    }, { passive: false });
+
+    container.addEventListener('touchmove', function(e) {
+        if (isPinching && e.touches.length === 2) {
+            e.preventDefault(); e.stopPropagation();
+            const dist = getDistance(e.touches);
+            scale = Math.max(1, Math.min(5, lastScale * (dist / pinchStartDist)));
+            updateTransform();
+        } else if (isDragging && e.touches.length === 1 && scale > 1) {
+            e.preventDefault(); e.stopPropagation();
+            posX = lastPosX + (e.touches[0].clientX - startX);
+            posY = lastPosY + (e.touches[0].clientY - startY);
+            updateTransform();
+        }
+    }, { passive: false });
+
+    container.addEventListener('touchend', function(e) {
+        if (isPinching) { isPinching = false; lastScale = scale; if (scale <= 1.1) resetZoom(); e.preventDefault(); return; }
+        if (isDragging) { isDragging = false; lastPosX = posX; lastPosY = posY; return; }
+        const now = Date.now();
+        if (e.touches.length === 0) {
+            if (now - lastTouchEnd < 300 && now - touchStartTime < 200) {
+                e.preventDefault();
+                if (scale > 1) resetZoom(); else { scale = 2.5; lastScale = scale; updateTransform(); }
+            }
+            lastTouchEnd = now;
+        }
+    }, { passive: false });
+
+    img.addEventListener('load', resetZoom);
+    return { resetZoom: resetZoom };
+}
+window.speciesZoomController = null;
+
+        // Global state for species images
+        let speciesImages = {};
+        let currentSpecies = null;
+        let currentImageIndex = 0;
+        let scrollPosition = 0;
+
+        // Touch tracking
+        let touchStartX = 0;
+        let touchStartY = 0;
+        let touchEndX = 0;
+        let touchEndY = 0;
+
+        // DOM elements
+        const modal = document.getElementById('species-modal');
+        const modalImg = document.getElementById('species-modal-img');
+        const modalCaption = document.getElementById('species-modal-caption');
+        const modalCounter = document.getElementById('modal-counter');
+        const navPrev = document.getElementById('nav-prev');
+        const navNext = document.getElementById('nav-next');
+        const modalClose = document.getElementById('modal-close');
+        const emailBtn = document.getElementById('email-btn');
+        const modalContent = document.getElementById('modal-content');
+
         // Update timestamp
         function updateTimestamp() {
             const timestampEl = document.getElementById('current-time');
             if (timestampEl) {
                 const now = new Date();
-                timestampEl.textContent = now.toLocaleTimeString('en-US', { 
+                timestampEl.textContent = now.toLocaleTimeString('en-US', {
                     hour12: false,
                     hour: '2-digit',
                     minute: '2-digit',
@@ -185,27 +487,36 @@
                 });
             }
         }
-        
+
         // Load species data
         async function loadSpecies() {
             try {
                 const response = await fetch('/api/species');
                 const data = await response.json();
-                
+
                 if (data.success) {
-                    // Update summary stats
                     document.getElementById('total-species').textContent = data.total_species;
                     document.getElementById('total-sightings').textContent = data.total_sightings;
-                    
-                    // Render species cards
+
+                    speciesImages = {};
+
                     const grid = document.getElementById('species-grid');
                     grid.innerHTML = '';
-                    
+
                     Object.entries(data.species_list || {}).forEach(([scientific, species]) => {
                         const isRare = species.sighting_count < 3;
                         const card = document.createElement('div');
                         card.className = 'species-card';
-                        
+
+                        if (species.identified_photos && species.identified_photos.length > 0) {
+                            speciesImages[species.common_name] = species.identified_photos.map(p => ({
+                                path: '/' + p.path,
+                                resizedPath: '/' + p.path.replace('identified_species/', 'identified_species_resized/'),
+                                thumbPath: '/' + p.path.replace('identified_species/', 'identified_species_thumb/'),
+                                filename: p.filename
+                            }));
+                        }
+
                         const statusMap = {
                             'LC': 'Least Concern',
                             'NT': 'Near Threatened',
@@ -213,7 +524,7 @@
                             'EN': 'Endangered',
                             'CR': 'Critically Endangered'
                         };
-                        
+
                         card.innerHTML = `
                             <div class="species-header">
                                 <div class="species-name">
@@ -224,7 +535,7 @@
                                     ${isRare ? 'RARE' : 'COMMON'}
                                 </span>
                             </div>
-                            
+
                             <div class="species-stats">
                                 <div class="stat-item">
                                     <div class="stat-value">${species.sighting_count}</div>
@@ -235,49 +546,269 @@
                                     <div class="stat-label">First Seen</div>
                                 </div>
                             </div>
-                            
+
                             ${species.identified_photos && species.identified_photos.length > 0 ? `
                                 <div class="species-photos">
                                     <div class="photo-grid">
-                                        ${species.identified_photos.slice(0, 3).map(photo => `
-                                            <img src="/${photo.path}" alt="${species.common_name}" loading="lazy" class="species-thumb">
+                                        ${species.identified_photos.slice(0, 3).map((photo, idx) => `
+                                            <img src="/${photo.path.replace('identified_species/', 'identified_species_thumb/')}"
+                                                 alt="${species.common_name}"
+                                                 loading="lazy"
+                                                 class="species-thumb"
+                                                 data-species="${species.common_name}"
+                                                 data-index="${idx}"
+                                                 style="cursor: pointer;">
                                         `).join('')}
                                     </div>
+                                    ${species.identified_photos.length > 3 ? `
+                                        <div style="text-align: center; margin-top: 0.5rem; color: var(--text-secondary); font-size: 0.875rem;">
+                                            +${species.identified_photos.length - 3} more photos
+                                        </div>
+                                    ` : ''}
                                 </div>
                             ` : ''}
-                            
+
                             <div class="species-info">
-                                ${species.characteristics ? 
+                                ${species.characteristics ?
                                     `<strong>Characteristics:</strong> ${species.characteristics.join(', ')}<br>` : ''}
-                                ${species.conservation_status ? 
-                                    `<span class="conservation-status status-${species.conservation_status}">
-                                        ${statusMap[species.conservation_status] || species.conservation_status}
-                                    </span>` : ''}
-                                ${species.fun_facts && species.fun_facts[0] ? 
+                                ${species.fun_facts && species.fun_facts[0] ?
                                     `<div class="fun-fact">💡 ${species.fun_facts[0]}</div>` : ''}
                             </div>
                         `;
-                        
+
                         grid.appendChild(card);
+                    });
+
+                    // Add click handlers to thumbnails
+                    document.querySelectorAll('.species-thumb').forEach(thumb => {
+                        thumb.addEventListener('click', function() {
+                            const species = this.dataset.species;
+                            const index = parseInt(this.dataset.index);
+                            openSpeciesImage(species, index);
+                        });
                     });
                 }
             } catch (error) {
                 console.error('Error loading species:', error);
             }
         }
-        
+
         function formatDate(isoDate) {
             if (!isoDate) return '--';
             const date = new Date(isoDate);
             return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
         }
-        
+
+        function openSpeciesImage(speciesName, index) {
+            currentSpecies = speciesName;
+            currentImageIndex = index;
+
+            const images = speciesImages[speciesName];
+            if (!images || images.length === 0) return;
+
+            // Save scroll position and lock body
+            scrollPosition = window.pageYOffset;
+            document.body.classList.add('modal-open');
+            document.body.style.top = `-${scrollPosition}px`;
+
+            updateModalImage();
+            modal.classList.add('open');
+            // Initialize pinch zoom
+            if (!window.speciesZoomController) {
+                const container = document.getElementById('species-img-container');
+                const imgEl = document.getElementById('species-modal-img');
+                if (container && imgEl) window.speciesZoomController = initPinchZoom(container, imgEl);
+            } else if (window.speciesZoomController.resetZoom) {
+                window.speciesZoomController.resetZoom();
+            }
+        }
+
+        function updateModalImage() {
+            const images = speciesImages[currentSpecies];
+            if (!images) return;
+
+            const image = images[currentImageIndex];
+            // Show loading
+            const loadingEl = document.getElementById("species-loading");
+            if (loadingEl) loadingEl.classList.add("visible");
+            modalImg.style.opacity = "0.3";
+            modalImg.onload = function() {
+                if (loadingEl) loadingEl.classList.remove("visible");
+                modalImg.style.opacity = "1";
+            };
+            modalImg.src = image.resizedPath;
+            modalCaption.textContent = currentSpecies;
+            modalCounter.textContent = `${currentImageIndex + 1} of ${images.length}`;
+
+            // Update nav buttons
+            navPrev.classList.toggle('disabled', currentImageIndex === 0);
+            navNext.classList.toggle('disabled', currentImageIndex === images.length - 1);
+        }
+
+        function navigateSpecies(direction) {
+            const images = speciesImages[currentSpecies];
+            if (!images) return;
+
+            const newIndex = currentImageIndex + direction;
+            if (newIndex >= 0 && newIndex < images.length) {
+                currentImageIndex = newIndex;
+                updateModalImage();
+            }
+        }
+
+        function closeSpeciesModal() {
+            modal.classList.remove('open');
+            document.body.classList.remove('modal-open');
+            document.body.style.top = '';
+            window.scrollTo(0, scrollPosition);
+        }
+
+        async function emailSpeciesImage() {
+            const images = speciesImages[currentSpecies];
+            if (!images) return;
+
+            const image = images[currentImageIndex];
+
+            emailBtn.disabled = true;
+            emailBtn.innerHTML = '<span>⏳</span> Sending...';
+
+            try {
+                const imagePath = image.path.replace('/identified_species/', 'IdentifiedSpecies/');
+
+                const response = await fetch('/api/email-species-image', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        image_path: imagePath,
+                        species_name: currentSpecies
+                    })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    emailBtn.innerHTML = '<span>✓</span> Sent!';
+                    setTimeout(() => {
+                        emailBtn.innerHTML = '<span>📧</span> Send';
+                        emailBtn.disabled = false;
+                    }, 2000);
+                } else {
+                    throw new Error(data.error || 'Failed to send');
+                }
+            } catch (error) {
+                alert('Failed to send email: ' + error.message);
+                emailBtn.innerHTML = '<span>📧</span> Send';
+                emailBtn.disabled = false;
+            }
+        }
+        async function shareSpeciesImage() {
+            const images = speciesImages[currentSpecies];
+            if (!images) return;
+            const image = images[currentImageIndex];
+            const btn = document.getElementById('share-btn');
+            if (btn) { btn.disabled = true; btn.innerHTML = '<span>⏳</span> Loading...'; }
+            try {
+                const response = await fetch(image.path);
+                const blob = await response.blob();
+                const filename = image.filename || 'bird_photo.jpg';
+                const file = new File([blob], filename, { type: blob.type });
+                if (navigator.canShare && navigator.canShare({ files: [file] })) {
+                    await navigator.share({ files: [file], title: 'Bird Photo: ' + currentSpecies, text: currentSpecies });
+                } else {
+                    const a = document.createElement('a');
+                    a.href = URL.createObjectURL(blob);
+                    a.download = filename;
+                    a.click();
+                    URL.revokeObjectURL(a.href);
+                    alert('Image downloaded. Please attach it to your email manually.');
+                }
+            } catch (err) { if (err.name !== 'AbortError') console.error('Share failed:', err); }
+            if (btn) { btn.disabled = false; btn.innerHTML = '<span>📧</span> Email Full Size'; }
+        }
+        // Event Listeners
+        modalClose.addEventListener('click', closeSpeciesModal);
+
+        navPrev.addEventListener('click', function(e) {
+            e.stopPropagation();
+            if (!this.classList.contains('disabled')) {
+                navigateSpecies(-1);
+            }
+        });
+
+        navNext.addEventListener('click', function(e) {
+            e.stopPropagation();
+            if (!this.classList.contains('disabled')) {
+                navigateSpecies(1);
+            }
+        });
+
+        emailBtn.addEventListener('click', emailSpeciesImage);
+
+        // Close modal on background click
+        modal.addEventListener('click', function(e) {
+            if (e.target === modal || e.target === modalContent) {
+                closeSpeciesModal();
+            }
+        });
+
+        // Keyboard navigation
+        document.addEventListener('keydown', function(e) {
+            if (!modal.classList.contains('open')) return;
+
+            if (e.key === 'Escape') closeSpeciesModal();
+            else if (e.key === 'ArrowLeft') navigateSpecies(-1);
+            else if (e.key === 'ArrowRight') navigateSpecies(1);
+        });
+
+        // Touch/Swipe handling
+        modal.addEventListener('touchstart', function(e) {
+            touchStartX = e.changedTouches[0].screenX;
+            touchStartY = e.changedTouches[0].screenY;
+        }, { passive: true });
+
+        modal.addEventListener('touchmove', function(e) {
+            // Prevent background scrolling
+            e.preventDefault();
+        }, { passive: false });
+
+        modal.addEventListener('touchend', function(e) {
+            touchEndX = e.changedTouches[0].screenX;
+            touchEndY = e.changedTouches[0].screenY;
+            handleSwipe();
+        }, { passive: true });
+
+        function handleSwipe() {
+            const diffX = touchStartX - touchEndX;
+            const diffY = touchStartY - touchEndY;
+            const minSwipeDistance = 50;
+
+            // Check if horizontal swipe is more prominent than vertical
+            if (Math.abs(diffX) > Math.abs(diffY)) {
+                // Horizontal swipe
+                if (Math.abs(diffX) > minSwipeDistance) {
+                    if (diffX > 0) {
+                        // Swipe left - next image
+                        navigateSpecies(1);
+                    } else {
+                        // Swipe right - previous image
+                        navigateSpecies(-1);
+                    }
+                }
+            } else {
+                // Vertical swipe
+                if (diffY < -minSwipeDistance) {
+                    // Swipe down - close modal
+                    closeSpeciesModal();
+                }
+            }
+        }
+
         // Initialize
         document.addEventListener('DOMContentLoaded', () => {
             updateTimestamp();
             setInterval(updateTimestamp, 1000);
             loadSpecies();
-            setInterval(loadSpecies, 30000); // Refresh every 30 seconds
+            setInterval(loadSpecies, 30000);
         });
     </script>
 </body>

@@ -128,7 +128,11 @@ class CameraController:
         # Callbacks
         self.motion_callback = None
         self.capture_callback = None
-        
+
+        # Weather-based pause
+        self.motion_paused = False
+        self.pause_reason = ""
+
         logger.info("Camera controller initialized")
     
     def setup_pipeline(self):
@@ -260,6 +264,12 @@ class CameraController:
             ctrl.setAutoFocusMode(dai.CameraControl.AutoFocusMode.OFF)
             ctrl.setManualFocus(self.config['focus'])
 
+            # Set EV compensation if configured
+            ev_compensation = self.config.get('ev_compensation', 0)
+            if ev_compensation != 0:
+                ctrl.setAutoExposureCompensation(ev_compensation)
+                logger.info(f"[EV] Applied EV compensation from config: {ev_compensation:+d}")
+
             # Set image quality settings
             ctrl.setSharpness(self.config['sharpness'])
             ctrl.setSaturation(self.config['saturation'])
@@ -315,6 +325,10 @@ class CameraController:
     
     def process_motion(self, frame):
         """Process motion detection on frame"""
+        if self.motion_paused:
+            logger.debug(f"Motion detection paused: {self.pause_reason}")
+            return False
+
         if not self.roi_defined:
             logger.debug("ROI not defined - no motion detection")
             return False
@@ -739,6 +753,11 @@ class CameraController:
                         exposure_us = int(exposure_ms * 1000)
                         logger.info(f"[EXPOSURE] Disabling auto exposure - setting manual: {exposure_ms}ms ({exposure_us}us), ISO={iso}")
                         ctrl.setManualExposure(exposure_us, iso)
+                elif setting == 'ev_compensation':
+                    # Exposure compensation for auto exposure mode (-9 to +9)
+                    logger.info(f"[EXPOSURE] Setting EV compensation: {value}")
+                    ctrl.setAutoExposureCompensation(value)
+                    self.config['ev_compensation'] = value
 
                 self.control_queue.send(ctrl)
                 logger.info(f"Camera setting updated: {setting} = {value}")

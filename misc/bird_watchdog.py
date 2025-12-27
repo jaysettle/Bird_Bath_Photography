@@ -13,13 +13,16 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
+# App directory is parent of misc folder
+APP_DIR = Path(__file__).parent.parent
+
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler(Path(__file__).parent / 'logs' / 'watchdog.log')
+        logging.FileHandler(APP_DIR / 'logs' / 'watchdog.log')
     ]
 )
 logger = logging.getLogger(__name__)
@@ -35,7 +38,7 @@ class BirdDetectionWatchdog:
         self.max_restarts = 10    # Maximum restarts per hour
         self.restart_count = 0
         self.last_restart_time = 0
-        self.working_dir = str(Path(__file__).parent)
+        self.working_dir = str(APP_DIR)
         self.script_path = os.path.join(self.working_dir, "main.py")
         
         # Detect python path - check virtual environment first, then system python
