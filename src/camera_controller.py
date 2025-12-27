@@ -128,7 +128,11 @@ class CameraController:
         # Callbacks
         self.motion_callback = None
         self.capture_callback = None
-        
+
+        # Weather-based pause
+        self.motion_paused = False
+        self.pause_reason = ""
+
         logger.info("Camera controller initialized")
     
     def setup_pipeline(self):
@@ -321,6 +325,10 @@ class CameraController:
     
     def process_motion(self, frame):
         """Process motion detection on frame"""
+        if self.motion_paused:
+            logger.debug(f"Motion detection paused: {self.pause_reason}")
+            return False
+
         if not self.roi_defined:
             logger.debug("ROI not defined - no motion detection")
             return False

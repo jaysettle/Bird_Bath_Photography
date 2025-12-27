@@ -374,8 +374,24 @@ class CameraTab(QWidget):
         self.roi_label = QLabel("ROI: None")
         self.roi_label.setStyleSheet("font-size: 11px;")
         stats_layout.addWidget(self.roi_label, 1, 2)
-        
-        
+
+        # Weather status (shown when enabled)
+        self.weather_label = QLabel("Weather: --")
+        self.weather_label.setStyleSheet("font-size: 11px;")
+        stats_layout.addWidget(self.weather_label, 2, 2)
+
+        # Motion detection status (active/inactive based on weather)
+        self.motion_status_label = QLabel("Motion: Active")
+        self.motion_status_label.setStyleSheet("font-size: 11px; color: #4CAF50; font-weight: bold;")
+        stats_layout.addWidget(self.motion_status_label, 3, 2)
+
+        # Weather override checkbox
+        self.weather_override_cb = QCheckBox("Override Rain Pause")
+        self.weather_override_cb.setStyleSheet("font-size: 10px;")
+        self.weather_override_cb.setToolTip("Enable motion detection even when raining")
+        self.weather_override_cb.stateChanged.connect(self.on_weather_override_changed)
+        stats_layout.addWidget(self.weather_override_cb, 4, 2)
+
         # Create label references for updates (hidden labels for compatibility)
         self.sensor_resolution_label = QLabel()
         self.fps_label = QLabel()
@@ -575,7 +591,52 @@ class CameraTab(QWidget):
         """Called when a photo is captured - updates stats"""
         self.session_capture_count += 1
         self.last_capture_time = datetime.now()
-    
+
+    def update_weather_status(self, weather_status):
+        """Update weather status display in stats panel"""
+        if not weather_status.get('enabled', False):
+            self.weather_label.setText("Weather: Disabled")
+            self.motion_status_label.setText("Motion: Active")
+            self.motion_status_label.setStyleSheet("font-size: 11px; color: #4CAF50; font-weight: bold;")
+            return
+
+        # Show weather description and temperature
+        description = weather_status.get('description', 'Unknown')
+        temperature = weather_status.get('temperature')
+        if temperature:
+            self.weather_label.setText(f"Weather: {description}, {temperature:.0f}°F")
+        else:
+            self.weather_label.setText(f"Weather: {description}")
+
+        # Check if override is active
+        override_active = self.weather_override_cb.isChecked()
+
+        # Show motion status with colors
+        if weather_status.get('is_raining', False) and not override_active:
+            # Inactive - red
+            self.motion_status_label.setText("Motion: INACTIVE (Rain)")
+            self.motion_status_label.setStyleSheet("font-size: 11px; color: #F44336; font-weight: bold;")
+        else:
+            # Active - green
+            if override_active and weather_status.get('is_raining', False):
+                self.motion_status_label.setText("Motion: Active (Override)")
+                self.motion_status_label.setStyleSheet("font-size: 11px; color: #FF9800; font-weight: bold;")
+            else:
+                self.motion_status_label.setText("Motion: Active")
+                self.motion_status_label.setStyleSheet("font-size: 11px; color: #4CAF50; font-weight: bold;")
+
+    def on_weather_override_changed(self, state):
+        """Handle weather override checkbox change"""
+        override_active = state == Qt.CheckState.Checked.value
+        logger.info(f"[WEATHER] Override {'enabled' if override_active else 'disabled'}")
+
+        # Update camera controller pause state
+        if override_active:
+            # Override - unpause motion detection
+            self.camera_controller.motion_paused = False
+            self.camera_controller.pause_reason = ""
+        # Note: If override is disabled and it's raining, the next weather check will re-pause
+
     def cleanup(self):
         """Clean up timers and resources"""
         if hasattr(self, 'stats_timer'):

@@ -52,7 +52,7 @@ lsusb | grep -i luxonis      # Should show OAK camera
 ## Architecture
 
 ```
-main.py (794 lines)                    # Entry point, MainWindow, service orchestration
+main.py (835 lines)                    # Entry point, MainWindow, service orchestration
 ├── src/
 │   ├── camera_controller.py (850+)   # OAK-D camera interface, motion detection, DepthAI pipeline
 │   ├── ai_bird_identifier.py (370)   # OpenAI Vision API, species identification
@@ -60,6 +60,7 @@ main.py (794 lines)                    # Entry point, MainWindow, service orches
 │   ├── drive_uploader_simple.py (850)# Google Drive multi-process uploader
 │   ├── cleanup_manager.py (350)      # Storage management (skips IdentifiedSpecies)
 │   ├── config_manager.py (156)       # Config loading/saving
+│   ├── weather_service.py (144)      # OpenWeatherMap API, rain detection, motion pause
 │   ├── species_tab.py (1100)         # Species gallery widget
 │   ├── threads/
 │   │   ├── camera_thread.py (122)    # QThread for camera ops, freeze detection
@@ -67,7 +68,7 @@ main.py (794 lines)                    # Entry point, MainWindow, service orches
 │   │   ├── drive_stats_monitor.py    # Google Drive folder statistics
 │   │   └── gallery_loader.py (82)    # Background image loading
 │   └── ui/
-│       ├── camera_tab.py (1494)      # Camera preview, ROI selection, settings save
+│       ├── camera_tab.py (1525)      # Camera preview, ROI selection, settings save, weather status
 │       ├── gallery_tab.py (1239)     # Photo viewer, date organization, multi-select
 │       ├── config_tab.py (1208)      # Settings UI, API testing
 │       ├── services_tab.py (468)     # Service enable/disable, status
@@ -121,6 +122,14 @@ main.py (794 lines)                    # Entry point, MainWindow, service orches
     "max_size_gb": 7,
     "cleanup_time": "23:30",
     "cleanup_enabled": true
+  },
+  "weather": {
+    "enabled": true,
+    "api_key": "YOUR_OPENWEATHERMAP_API_KEY",
+    "latitude": 39.7042,
+    "longitude": -86.3994,
+    "check_interval_minutes": 60,
+    "pause_on_rain": true
   }
 }
 ```
@@ -156,6 +165,23 @@ CameraThread catches ConnectionError and triggers automatic reconnection every 5
 - Google Drive uploads in multiprocessing workers
 - Email sending in background thread with pyqtSignal for UI updates
 - All GUI updates via Qt signals/slots only
+
+### Weather-Based Motion Pause
+The system can automatically pause motion detection during rain:
+- Uses OpenWeatherMap API to check current weather conditions
+- Checks weather every `check_interval_minutes` (default 60 min)
+- Pauses on: thunderstorm, drizzle, rain (codes 200-531) - snow is OK
+- Weather status shown in Camera tab Statistics panel with colors:
+  - **Green**: "Motion: Active" - motion detection running
+  - **Red**: "Motion: INACTIVE (Rain)" - paused due to rain
+  - **Orange**: "Motion: Active (Override)" - override enabled during rain
+- "Override Rain Pause" checkbox allows manual override during rain
+- Logs tagged with `[WEATHER]`
+
+To enable:
+1. Get free API key from https://openweathermap.org/api
+2. Set `weather.enabled: true` in config.json
+3. Add your API key and location coordinates (lat/lon)
 
 ## Settings Persistence
 
@@ -228,6 +254,9 @@ grep "\[FILE-IO\]" logs/bird_detection.log
 
 # External watchdog
 grep "GUI FROZEN\|Application restarted" logs/watchdog.log
+
+# Weather service
+grep "\[WEATHER\]" logs/bird_detection.log
 ```
 
 ## Photo Storage Structure
@@ -282,6 +311,21 @@ Auth required for public access: `birds`/`birdwatcher`
 lsusb | grep -i luxonis  # Should show device
 dmesg | grep -i usb      # Check for errors
 ```
+
+**Camera stuck in X_LINK_UNBOOTED (Failed to boot device!):**
+```bash
+# Symptoms:
+lsusb | grep 03e7  # Shows 03e7:2485 (bootloader) instead of 03e7:f63b (running)
+# DepthAI logs: "skipping X_LINK_UNBOOTED device" and "Failed to boot device!"
+# Kernel logs: "usb 1-1: can't set config #1, error -71"
+```
+Solutions (try in order):
+1. **Unplug camera for 30 seconds**, then replug
+2. **Try different USB cable** - OAK cameras need quality USB 3.0 cables
+3. **Try different USB port** - use USB 3.0 (blue) ports
+4. **Use powered USB hub** - camera may need more power than Pi provides
+5. **Test camera on another system** to verify hardware works
+6. After hardware fix, restart app: `sudo systemctl restart bird-detection-watchdog`
 
 **GUI freezes:**
 - Check `logs/heartbeat.txt` age

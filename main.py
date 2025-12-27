@@ -45,6 +45,7 @@ from src.camera_controller import CameraController
 from src.email_handler import EmailHandler
 from src.drive_uploader_simple import CombinedUploader
 from src.ai_bird_identifier import AIBirdIdentifier
+from src.weather_service import WeatherService
 from src.species_tab import SpeciesTab
 from src.cleanup_manager import CleanupManager
 # Removed bird_prefilter import
@@ -84,6 +85,11 @@ class MainWindow(QMainWindow):
         self.cleanup_timer.timeout.connect(self.check_cleanup_time)
         self.cleanup_timer.start(60000)  # Check every minute
         self.last_cleanup_date = None
+
+        # Weather check timer - check every minute (actual API call respects check_interval)
+        self.weather_timer = QTimer()
+        self.weather_timer.timeout.connect(self.check_weather)
+        self.weather_timer.start(60000)  # Check every minute
 
         # GUI Freeze Detection Watchdog
         self.gui_watchdog_timer = QTimer()
@@ -127,10 +133,14 @@ class MainWindow(QMainWindow):
         
         # Cleanup manager for automatic storage cleanup
         self.cleanup_manager = CleanupManager(self.config)
-        
+
+        # Weather service for rain detection
+        weather_config = self.config.get('weather', {})
+        self.weather_service = WeatherService(weather_config)
+
         # Bird Pre-filter Service
         # Removed bird prefilter initialization
-        
+
         # Service monitor
         self.service_monitor = ServiceMonitor()
         
@@ -541,6 +551,42 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 logger.error(f"Cleanup failed: {e}")
     
+    def check_weather(self):
+        """Check weather and pause motion detection if raining"""
+        if not self.weather_service.enabled:
+            return
+
+        # Only check if enough time has passed (respects check_interval)
+        if self.weather_service.should_check_weather():
+            is_raining = self.weather_service.check_weather()
+
+            # Get pause_on_rain setting from config
+            weather_config = self.config.get('weather', {})
+            pause_on_rain = weather_config.get('pause_on_rain', True)
+
+            # Check if override is active in camera tab
+            override_active = False
+            if hasattr(self, 'camera_tab') and hasattr(self.camera_tab, 'weather_override_cb'):
+                override_active = self.camera_tab.weather_override_cb.isChecked()
+
+            # Update camera controller pause state (only if override not active)
+            if pause_on_rain and is_raining and not override_active:
+                if not self.camera_controller.motion_paused:
+                    self.camera_controller.motion_paused = True
+                    self.camera_controller.pause_reason = f"Rain: {self.weather_service.weather_description}"
+                    logger.info(f"[WEATHER] Motion detection PAUSED - {self.weather_service.weather_description}")
+                    self.statusBar().showMessage(f"Motion paused: {self.weather_service.weather_description}")
+            else:
+                if self.camera_controller.motion_paused and "Rain" in self.camera_controller.pause_reason:
+                    self.camera_controller.motion_paused = False
+                    self.camera_controller.pause_reason = ""
+                    logger.info("[WEATHER] Motion detection RESUMED - weather cleared")
+                    self.statusBar().showMessage("Motion detection resumed - weather cleared")
+
+            # Update camera tab UI if it has weather display
+            if hasattr(self, 'camera_tab') and hasattr(self.camera_tab, 'update_weather_status'):
+                self.camera_tab.update_weather_status(self.weather_service.get_status())
+
     def run_cleanup_now(self):
         """Run storage cleanup manually"""
         try:
