@@ -93,8 +93,8 @@ def get_images_dir():
 
 IMAGES_DIR = get_images_dir()
 UPLOAD_LOG = IMAGES_DIR / "drive_uploads.json"
-# Thumbnail settings
-THUMBNAIL_SIZE = (600, 600)
+# Thumbnail settings - optimized for speed
+THUMBNAIL_SIZE = (300, 300)  # Smaller for faster loading
 THUMBNAIL_DIR = IMAGES_DIR / ".thumbnails"
 
 def ensure_thumbnail_dir():
@@ -114,15 +114,16 @@ def get_or_create_thumbnail(image_path):
         with Image.open(image_path) as img:
             if img.mode in ("RGBA", "P"):
                 img = img.convert("RGB")
-            img.thumbnail(THUMBNAIL_SIZE, Image.Resampling.LANCZOS)
+            # Use BILINEAR for speed (LANCZOS is slower)
+            img.thumbnail(THUMBNAIL_SIZE, Image.Resampling.BILINEAR)
             buffer = BytesIO()
-            img.save(buffer, format="JPEG", quality=85, optimize=True)
+            img.save(buffer, format="JPEG", quality=70, optimize=False)
             thumb_bytes = buffer.getvalue()
             thumb_path.write_bytes(thumb_bytes)
             return thumb_bytes
     except Exception as e:
         logger.error(f"Error creating thumbnail for {image_path}: {e}")
-        return image_path.read_bytes()
+        return None  # Return None instead of full image to avoid loading huge files
 
 
 # Species lookup cache
@@ -359,13 +360,11 @@ def start_photo_watcher():
 
 
 @app.route('/')
-@requires_auth
 def index():
     """Main page"""
     return render_template('index.html')
 
 @app.route("/gallery")
-@requires_auth
 def gallery_redirect():
     """Redirect to main page with gallery tab"""
     return redirect("/#gallery")
@@ -396,7 +395,6 @@ def api_images():
 
 
 @app.route('/api/thumbnail/<path:image_path>')
-@requires_auth
 def api_thumbnail(image_path):
     try:
         filepath = (IMAGES_DIR / image_path).resolve()
@@ -416,12 +414,13 @@ def api_thumbnail(image_path):
 
     if filepath.exists() and filepath.suffix.lower() in ['.jpeg', '.jpg']:
         thumb_bytes = get_or_create_thumbnail(filepath)
-        return Response(thumb_bytes, mimetype='image/jpeg')
+        response = Response(thumb_bytes, mimetype="image/jpeg")
+        response.headers["Cache-Control"] = "public, max-age=86400"
+        return response
 
     return jsonify({'error': 'Image not found'}), 404
 
 @app.route('/api/gallery')
-@requires_auth
 def api_gallery():
     """Paginated gallery view grouped by date."""
     try:
@@ -512,7 +511,6 @@ def api_gallery():
 
 
 @app.route('/api/photo-counts')
-@requires_auth
 def api_photo_counts():
     """Get photo counts per date for calendar."""
     try:
@@ -529,7 +527,6 @@ def api_photo_counts():
 
 
 @app.route('/api/clear-thumbnail-cache', methods=['POST'])
-@requires_auth
 def api_clear_thumbnail_cache():
     """Clear the thumbnail cache directory."""
     try:
@@ -547,7 +544,6 @@ def api_clear_thumbnail_cache():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/api/image/<path:image_path>')
-@requires_auth
 def api_image(image_path):
     """Serve an image (handles both root and date folder paths)"""
     # Validate path to prevent directory traversal
@@ -576,7 +572,6 @@ def api_image(image_path):
 MODAL_IMAGE_SIZE = (1200, 1200)
 
 @app.route("/api/image-resized/<path:image_path>")
-@requires_auth
 def api_image_resized(image_path):
     try:
         filepath = (IMAGES_DIR / image_path).resolve()
@@ -607,7 +602,6 @@ def api_image_resized(image_path):
     return jsonify({"error": "Image not found"}), 404
 
 @app.route("/api/image-metadata/<path:image_path>")
-@requires_auth
 def api_image_metadata(image_path):
     try:
         filepath = (IMAGES_DIR / image_path).resolve()
@@ -993,8 +987,8 @@ def serve_identified_species_thumbnail(species_folder, filename):
     try:
         photo_path = IMAGES_DIR / "IdentifiedSpecies" / species_folder / filename
         if photo_path.exists():
-            thumb_bytes = get_or_create_thumbnail(photo_path)
-            return Response(thumb_bytes, mimetype='image/jpeg')
+            response.headers["Cache-Control"] = "public, max-age=86400"
+            return response
         else:
             return "Photo not found", 404
     except Exception as e:
@@ -1078,7 +1072,6 @@ def api_email_image():
 
 
 @app.route('/api/email-species-image', methods=['POST'])
-@requires_auth
 def api_email_species_image():
     """Email a species image with species name in subject"""
     try:
@@ -1138,18 +1131,15 @@ def api_email_species_image():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 @app.route('/debug')
-@requires_auth
 def debug_gallery():
     return render_template('debug.html')
 
 @app.route('/live')
-@requires_auth
 def live_gallery():
     """Live gallery page with auto-refresh"""
     return render_template('live_gallery.html')
 
 @app.route('/api/latest')
-@requires_auth
 def api_latest():
     """Get the single most recent photo - for polling"""
     try:
@@ -1195,7 +1185,7 @@ if __name__ == '__main__':
         observer = None
     
     # Find available port
-    port = find_available_port(8080)
+    port = 8080  # Fixed port
     if port is None:
         print("ERROR: No available ports found in range 8080-8089", file=sys.stderr)
         sys.exit(1)

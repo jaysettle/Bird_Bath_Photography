@@ -1,12 +1,12 @@
 // Mobile Web Interface JavaScript
 // Auto-refresh intervals
-const STATS_REFRESH = 5000; // 5 seconds
+const STATS_REFRESH = 60000; // 5 seconds
 const IMAGES_REFRESH = 10000; // 10 seconds
-const LOGS_REFRESH = 3000; // 3 seconds
+const LOGS_REFRESH = 120000; // 3 seconds
 // Gallery load limits - controlled by dropdown
 function getGalleryLoadLimit() {
     const select = document.getElementById('gallery-load-select');
-    return select ? parseInt(select.value) : 60;
+    return select ? parseInt(select.value) : 20;
 }
 const GALLERY_SCROLL_THRESHOLD = 250; // px from bottom to fetch more
 
@@ -14,7 +14,7 @@ const GALLERY_SCROLL_THRESHOLD = 250; // px from bottom to fetch more
 let isRestarting = false;
 let autoScroll = true;
 window.currentTab = 'gallery';
-console.log('[INIT] window.currentTab initialized to:', window.currentTab);
+// console.log('[INIT] window.currentTab initialized to:', window.currentTab);
 let autoRefreshPreview = true;
 let previewInterval = null;
 
@@ -66,8 +66,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if(typeof startScrollCheck==="function") startScrollCheck();
     
     // Set up auto-refresh (but not for images)
-    setInterval(loadStats, STATS_REFRESH);
-    setInterval(loadLogs, LOGS_REFRESH);
+    // Disabled: setInterval(loadStats, STATS_REFRESH);
+    // Disabled: setInterval(loadLogs, LOGS_REFRESH);
     
     // Update timestamp every second
     updateTimestamp();
@@ -132,7 +132,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Autoscroll toggle
     const autoscrollToggle = document.getElementById('autoscroll-toggle');
-    autoscrollToggle.addEventListener('change', (e) => {
+    autoscrollToggle?.addEventListener('change', (e) => {
         autoScroll = e.target.checked;
     });
     
@@ -164,7 +164,7 @@ async function loadStats() {
         // Update app status
         updateAppStatus(data.app_running);
     } catch (error) {
-        console.error('Error loading stats:', error);
+        // console.error('Error loading stats:', error);
     }
 }
 
@@ -181,7 +181,7 @@ async function loadImages() {
             </div>
         `).join('');
     } catch (error) {
-        console.error('Error loading images:', error);
+        // console.error('Error loading images:', error);
     }
 }
 
@@ -354,20 +354,20 @@ async function loadGallery({ initial = false } = {}) {
         }
 
         // Prepare state for next fetch
-        console.log('[GALLERY] API response - has_more:', data.has_more, 'next_date:', data.next_date, 'date:', data.date);
+        // console.log('[GALLERY] API response - has_more:', data.has_more, 'next_date:', data.next_date, 'date:', data.date);
         if (data.has_more) {
             galleryState.currentDate = data.date;
             galleryState.offset = data.offset;
-            console.log('[GALLERY] More images for this date, offset:', data.offset);
+            // console.log('[GALLERY] More images for this date, offset:', data.offset);
         } else if (data.next_date) {
             galleryState.currentDate = data.next_date;
             galleryState.offset = 0;
-            console.log('[GALLERY] Moving to next date:', data.next_date);
+            // console.log('[GALLERY] Moving to next date:', data.next_date);
         } else {
             galleryState.currentDate = null;
             galleryState.offset = 0;
             galleryState.allLoaded = true;
-            console.log('[GALLERY] No more dates - allLoaded = true');
+            // console.log('[GALLERY] No more dates - allLoaded = true');
         }
 
         // Automatically continue if current date had no images but a next date exists
@@ -375,7 +375,7 @@ async function loadGallery({ initial = false } = {}) {
             shouldAutoLoadNext = true;
         }
     } catch (error) {
-        console.error('Error loading gallery:', error);
+        // console.error('Error loading gallery:', error);
         if (elements.galleryEmpty) {
             elements.galleryEmpty.textContent = 'Failed to load gallery.';
             elements.galleryEmpty.style.display = 'block';
@@ -426,7 +426,7 @@ async function refreshImages() {
             elements.refreshImagesBtn.disabled = false;
         }, 500);
     } catch (error) {
-        console.error('Error refreshing images:', error);
+        // console.error('Error refreshing images:', error);
         elements.refreshImagesBtn.classList.remove('loading');
         elements.refreshImagesBtn.disabled = false;
     }
@@ -457,7 +457,7 @@ async function loadLogs() {
             }
         }
     } catch (error) {
-        console.error('Error loading logs:', error);
+        // console.error('Error loading logs:', error);
     }
 }
 
@@ -601,7 +601,7 @@ async function updateModalCaption(img) {
             `;
         }
     } catch (e) {
-        console.log("Could not fetch metadata:", e);
+        // console.log("Could not fetch metadata:", e);
     }
 }
 
@@ -703,7 +703,7 @@ async function shareFullImage() {
             URL.revokeObjectURL(a.href);
             alert('Image downloaded. Please attach it to your email manually.');
         }
-    } catch (err) { if (err.name !== 'AbortError') console.error('Share failed:', err); }
+    } catch (err) { /* ignore AbortError */ }
     if (btn) { btn.disabled = false; btn.textContent = '📧 Email Full Size'; }
 }
 
@@ -826,18 +826,18 @@ function startScrollCheck() {
         const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
 
         if (distanceFromBottom < 600) {
-            console.log('[TIMER] Near bottom, loading more... distance:', distanceFromBottom);
+            // console.log('[TIMER] Near bottom, loading more... distance:', distanceFromBottom);
             loadGallery();
         }
     }, 500);
-    console.log('[TIMER] Scroll check started');
+    // console.log('[TIMER] Scroll check started');
 }
 
 function stopScrollCheck() {
     if (scrollCheckInterval) {
         clearInterval(scrollCheckInterval);
         scrollCheckInterval = null;
-        console.log('[TIMER] Scroll check stopped');
+        // console.log('[TIMER] Scroll check stopped');
     }
 }
 
@@ -852,7 +852,7 @@ function handleGalleryScroll() {
     const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
 
     if (distanceFromBottom < 500) {
-        console.log('[SCROLL] Near bottom, loading more... distance:', distanceFromBottom);
+        // console.log('[SCROLL] Near bottom, loading more... distance:', distanceFromBottom);
         loadGallery();
     }
 }
@@ -881,12 +881,12 @@ function updateLoadMoreButton() {
 let galleryObserver = null;
 
 function setupGalleryObserver() {
-    console.log('[OBSERVER] Setting up gallery observer...');
+    // console.log('[OBSERVER] Setting up gallery observer...');
 
     // Use existing trigger element from HTML
     const galleryLoadTrigger = document.getElementById('gallery-load-trigger');
     if (!galleryLoadTrigger) {
-        console.log('[OBSERVER] No trigger element found!');
+        // console.log('[OBSERVER] No trigger element found!');
         return;
     }
 
@@ -899,9 +899,9 @@ function setupGalleryObserver() {
     galleryObserver = new IntersectionObserver((entries) => {
         entries.forEach(entry => {
             if (entry.isIntersecting) {
-                console.log('[OBSERVER] Trigger visible - tab:', window.currentTab, 'loading:', galleryState.loading, 'allLoaded:', galleryState.allLoaded);
+                // console.log('[OBSERVER] Trigger visible - tab:', window.currentTab, 'loading:', galleryState.loading, 'allLoaded:', galleryState.allLoaded);
                 if (window.currentTab === 'gallery' && !galleryState.loading && !galleryState.allLoaded) {
-                    console.log('[OBSERVER] Loading more...');
+                    // console.log('[OBSERVER] Loading more...');
                     loadGallery();
                 }
             }
@@ -913,7 +913,7 @@ function setupGalleryObserver() {
     });
 
     galleryObserver.observe(galleryLoadTrigger);
-    console.log('[OBSERVER] Observer attached');
+    // console.log('[OBSERVER] Observer attached');
 }
 
 // Load camera settings
@@ -937,7 +937,7 @@ async function loadCameraSettings() {
             });
         }
     } catch (error) {
-        console.error('Error loading camera settings:', error);
+        // console.error('Error loading camera settings:', error);
     }
 }
 
@@ -1152,7 +1152,7 @@ async function loadPhotoCountsByDate() {
             renderCalendar();
         }
     } catch (error) {
-        console.error('Error loading photo counts:', error);
+        // console.error('Error loading photo counts:', error);
     }
 }
 
@@ -1371,11 +1371,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // SUPER DEBUG INFINITE SCROLL
-    console.log('[INIT] Setting up infinite scroll - window.currentTab is:', window.currentTab);
+    // console.log('[INIT] Setting up infinite scroll - window.currentTab is:', window.currentTab);
 
     // Log window.currentTab every 2 seconds regardless
     setInterval(() => {
-        console.log('[TAB-CHECK] window.currentTab =', window.currentTab, 'type:', typeof window.currentTab);
+        // console.log('[TAB-CHECK] window.currentTab =', window.currentTab, 'type:', typeof window.currentTab);
     }, 2000);
 
     let debugCounter = 0;
@@ -1385,34 +1385,34 @@ document.addEventListener('DOMContentLoaded', () => {
         const pct = Math.round((window.scrollY + window.innerHeight) / document.body.scrollHeight * 100);
 
         // Always log current state
-        console.log('[SCROLL #' + debugCounter + '] tab=' + window.currentTab +
-                    ' loading=' + galleryState.loading +
-                    ' allLoaded=' + galleryState.allLoaded +
-                    ' pct=' + pct + '%');
+        // console.log('[SCROLL #' + debugCounter + '] tab=' + window.currentTab +
+        //             ' loading=' + galleryState.loading +
+        //             ' allLoaded=' + galleryState.allLoaded +
+        //             ' pct=' + pct + '%');
 
         // Check if on gallery
         if (window.currentTab !== 'gallery') {
             return; // Silent skip
         }
 
-        console.log('[SCROLL] On gallery tab! Checking conditions...');
+        // console.log('[SCROLL] On gallery tab! Checking conditions...');
 
         if (galleryState.loading) {
-            console.log('[SCROLL] Skip - loading');
+            // console.log('[SCROLL] Skip - loading');
             return;
         }
         if (galleryState.allLoaded) {
-            console.log('[SCROLL] Skip - allLoaded');
+            // console.log('[SCROLL] Skip - allLoaded');
             return;
         }
 
         if (pct > 70) {
-            console.log('[SCROLL] *** LOADING MORE *** pct=' + pct);
+            // console.log('[SCROLL] *** LOADING MORE *** pct=' + pct);
             loadGallery();
         } else {
-            console.log('[SCROLL] Not at 70% yet, pct=' + pct);
+            // console.log('[SCROLL] Not at 70% yet, pct=' + pct);
         }
     }, 1000);
 
-    console.log('[INIT] Infinite scroll started');
+    // console.log('[INIT] Infinite scroll started');
 });
