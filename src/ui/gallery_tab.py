@@ -32,8 +32,8 @@ class GalleryTab(QWidget):
         self.loaded_dates = set()  # Track which dates have been loaded
         self.today_date = datetime.now().strftime('%Y-%m-%d')
         self.current_focus_index = -1  # Track currently focused item for arrow navigation
-        self.initial_batch_size = 200  # Images to load for the newest day
-        self.scroll_batch_size = 200   # Images to load per scroll batch
+        self.initial_batch_size = 60  # Images to load for the newest day
+        self.scroll_batch_size = 60   # Images to load per scroll batch
         self.scroll_trigger_percent = 80  # Threshold percentage to trigger lazy load
         self.setup_ui()
         

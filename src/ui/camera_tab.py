@@ -449,30 +449,24 @@ class CameraTab(QWidget):
                 return
 
             bytes_per_line = 3 * width
-            logger.debug(f"[FREEZE-CHECK] Creating QImage: {width}x{height}, bpl: {bytes_per_line}")
             q_image = QImage(frame.data, width, height, bytes_per_line, QImage.Format.Format_RGB888).rgbSwapped()
 
             if q_image.isNull():
-                logger.error("[FREEZE-CHECK] Failed to create QImage from frame data - THIS CAUSES GUI FREEZE")
+                logger.error("[FREEZE-CHECK] Failed to create QImage from frame data")
                 return
 
-            logger.debug(f"[FREEZE-CHECK] QImage created successfully, converting to pixmap")
-            # Scale to fit preview
             pixmap = QPixmap.fromImage(q_image)
             if pixmap.isNull():
-                logger.error("[FREEZE-CHECK] Failed to create QPixmap from QImage - THIS CAUSES GUI FREEZE")
+                logger.error("[FREEZE-CHECK] Failed to create QPixmap from QImage")
                 return
 
-            logger.debug(f"[FREEZE-CHECK] Pixmap created, scaling to preview size: {self.preview_label.size()}")
             scaled_pixmap = pixmap.scaled(
                 self.preview_label.size(),
                 Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
+                Qt.TransformationMode.FastTransformation
             )
 
-            logger.debug(f"[FREEZE-CHECK] Setting pixmap on label")
             self.preview_label.setPixmap(scaled_pixmap)
-            logger.debug(f"[FREEZE-CHECK] Frame display update complete")
 
             # Update FPS in stats (approximate)
             if hasattr(self, 'sensor_fps_label'):

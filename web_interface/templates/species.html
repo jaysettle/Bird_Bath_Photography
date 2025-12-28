@@ -360,6 +360,11 @@
             </div>
         </section>
 
+        <!-- Debug Status (visible on page) -->
+        <div id="debug-status" style="background: #333; color: #0f0; padding: 10px; margin: 10px; border-radius: 5px; font-family: monospace; font-size: 12px;">
+            Loading species data...
+        </div>
+
         <!-- Species Grid -->
         <section class="species-grid" id="species-grid">
             <!-- Species cards will be loaded here -->
@@ -490,11 +495,16 @@ window.speciesZoomController = null;
 
         // Load species data
         async function loadSpecies() {
+            const debugEl = document.getElementById('debug-status');
             try {
+                debugEl.textContent = 'Fetching /api/species...';
                 const response = await fetch('/api/species');
+                debugEl.textContent = `API status: ${response.status}`;
                 const data = await response.json();
+                debugEl.textContent = `Got data. success=${data.success}, species=${Object.keys(data.species_list || {}).length}`;
 
                 if (data.success) {
+                    debugEl.textContent = `Rendering ${Object.keys(data.species_list).length} species cards...`;
                     document.getElementById('total-species').textContent = data.total_species;
                     document.getElementById('total-sightings').textContent = data.total_sightings;
 
@@ -511,7 +521,7 @@ window.speciesZoomController = null;
                         if (species.identified_photos && species.identified_photos.length > 0) {
                             speciesImages[species.common_name] = species.identified_photos.map(p => ({
                                 path: '/' + p.path,
-                                resizedPath: '/' + p.path.replace('identified_species/', 'identified_species_resized/'),
+                                resizedPath: '/' + p.path,
                                 thumbPath: '/' + p.path.replace('identified_species/', 'identified_species_thumb/'),
                                 filename: p.filename
                             }));
@@ -587,8 +597,15 @@ window.speciesZoomController = null;
                             openSpeciesImage(species, index);
                         });
                     });
+                    debugEl.textContent = `✓ Done! Rendered ${Object.keys(data.species_list).length} species`;
+                    debugEl.style.color = '#0f0';
+                } else {
+                    debugEl.textContent = `ERROR: data.success is false`;
+                    debugEl.style.color = '#f00';
                 }
             } catch (error) {
+                debugEl.textContent = `ERROR: ${error.message}`;
+                debugEl.style.color = '#f00';
                 console.error('Error loading species:', error);
             }
         }
@@ -726,56 +743,101 @@ window.speciesZoomController = null;
             if (btn) { btn.disabled = false; btn.innerHTML = '<span>📧</span> Email Full Size'; }
         }
         // Event Listeners
-        modalClose.addEventListener('click', closeSpeciesModal);
+        console.log('🔧 Setting up event listeners - START');
+        console.log('🔧 modalClose:', modalClose);
+        console.log('🔧 navPrev:', navPrev);
+        console.log('🔧 navNext:', navNext);
+        console.log('🔧 emailBtn:', emailBtn);
+        console.log('🔧 modal:', modal);
 
-        navPrev.addEventListener('click', function(e) {
-            e.stopPropagation();
-            if (!this.classList.contains('disabled')) {
-                navigateSpecies(-1);
+        try {
+            if (modalClose) {
+                console.log('🔧 Adding click listener to modalClose');
+                modalClose.addEventListener('click', closeSpeciesModal);
+            } else {
+                console.warn('🔧 modalClose is null, skipping');
             }
-        });
 
-        navNext.addEventListener('click', function(e) {
-            e.stopPropagation();
-            if (!this.classList.contains('disabled')) {
-                navigateSpecies(1);
+            if (navPrev) {
+                console.log('🔧 Adding click listener to navPrev');
+                navPrev.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    if (!this.classList.contains('disabled')) {
+                        navigateSpecies(-1);
+                    }
+                });
+            } else {
+                console.warn('🔧 navPrev is null, skipping');
             }
-        });
 
-        emailBtn.addEventListener('click', emailSpeciesImage);
-
-        // Close modal on background click
-        modal.addEventListener('click', function(e) {
-            if (e.target === modal || e.target === modalContent) {
-                closeSpeciesModal();
+            if (navNext) {
+                console.log('🔧 Adding click listener to navNext');
+                navNext.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    if (!this.classList.contains('disabled')) {
+                        navigateSpecies(1);
+                    }
+                });
+            } else {
+                console.warn('🔧 navNext is null, skipping');
             }
-        });
 
-        // Keyboard navigation
-        document.addEventListener('keydown', function(e) {
-            if (!modal.classList.contains('open')) return;
+            if (emailBtn) {
+                console.log('🔧 Adding click listener to emailBtn');
+                emailBtn.addEventListener('click', emailSpeciesImage);
+            } else {
+                console.warn('🔧 emailBtn is null, skipping');
+            }
 
-            if (e.key === 'Escape') closeSpeciesModal();
-            else if (e.key === 'ArrowLeft') navigateSpecies(-1);
-            else if (e.key === 'ArrowRight') navigateSpecies(1);
-        });
+            // Close modal on background click
+            if (modal) {
+                console.log('🔧 Adding click listener to modal');
+                modal.addEventListener('click', function(e) {
+                    if (e.target === modal || e.target === modalContent) {
+                        closeSpeciesModal();
+                    }
+                });
+            } else {
+                console.warn('🔧 modal is null, skipping modal click');
+            }
 
-        // Touch/Swipe handling
-        modal.addEventListener('touchstart', function(e) {
-            touchStartX = e.changedTouches[0].screenX;
-            touchStartY = e.changedTouches[0].screenY;
-        }, { passive: true });
+            // Keyboard navigation
+            console.log('🔧 Adding keydown listener to document');
+            document.addEventListener('keydown', function(e) {
+                if (!modal || !modal.classList.contains('open')) return;
 
-        modal.addEventListener('touchmove', function(e) {
-            // Prevent background scrolling
-            e.preventDefault();
-        }, { passive: false });
+                if (e.key === 'Escape') closeSpeciesModal();
+                else if (e.key === 'ArrowLeft') navigateSpecies(-1);
+                else if (e.key === 'ArrowRight') navigateSpecies(1);
+            });
 
-        modal.addEventListener('touchend', function(e) {
-            touchEndX = e.changedTouches[0].screenX;
-            touchEndY = e.changedTouches[0].screenY;
-            handleSwipe();
-        }, { passive: true });
+            // Touch/Swipe handling
+            if (modal) {
+                console.log('🔧 Adding touch listeners to modal');
+                modal.addEventListener('touchstart', function(e) {
+                    touchStartX = e.changedTouches[0].screenX;
+                    touchStartY = e.changedTouches[0].screenY;
+                }, { passive: true });
+
+                modal.addEventListener('touchmove', function(e) {
+                    // Prevent background scrolling
+                    e.preventDefault();
+                }, { passive: false });
+
+                modal.addEventListener('touchend', function(e) {
+                    touchEndX = e.changedTouches[0].screenX;
+                    touchEndY = e.changedTouches[0].screenY;
+                    handleSwipe();
+                }, { passive: true });
+            } else {
+                console.warn('🔧 modal is null, skipping touch listeners');
+            }
+
+            console.log('🔧 Event listeners setup - COMPLETE');
+        } catch (eventError) {
+            console.error('🔧 ERROR setting up event listeners:', eventError);
+            console.error('🔧 Error stack:', eventError.stack);
+        }
 
         function handleSwipe() {
             const diffX = touchStartX - touchEndX;
@@ -810,6 +872,18 @@ window.speciesZoomController = null;
             loadSpecies();
             setInterval(loadSpecies, 30000);
         });
+    </script>
+</body>
+</html>
+    <script>
+        setTimeout(function() {
+            console.log('Direct call to loadSpecies');
+            if (typeof loadSpecies === 'function') {
+                loadSpecies();
+            } else {
+                console.error('loadSpecies is not defined');
+            }
+        }, 2000);
     </script>
 </body>
 </html>

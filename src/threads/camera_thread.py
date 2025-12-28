@@ -88,7 +88,7 @@ class CameraThread(QThread):
                     if self.camera_controller.process_motion(frame):
                         pass
 
-                    self.msleep(33)
+                    self.msleep(66)  # ~15fps - reduced from 30fps to lower CPU
                 else:
                     consecutive_frame_failures += 1
                     if consecutive_frame_failures >= max_frame_failures:
