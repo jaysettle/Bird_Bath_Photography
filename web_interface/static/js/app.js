@@ -2,11 +2,12 @@
 // Auto-refresh intervals
 const STATS_REFRESH = 60000; // 5 seconds
 const IMAGES_REFRESH = 10000; // 10 seconds
-const LOGS_REFRESH = 120000; // 3 seconds
+const LOGS_REFRESH = 120000;
+const MAX_AUTO_LOAD = 60;  // Stop infinite scroll after this many images // 3 seconds
 // Gallery load limits - controlled by dropdown
 function getGalleryLoadLimit() {
     const select = document.getElementById('gallery-load-select');
-    return select ? parseInt(select.value) : 20;
+    return select ? parseInt(select.value) : 60;
 }
 const GALLERY_SCROLL_THRESHOLD = 250; // px from bottom to fetch more
 
@@ -813,7 +814,7 @@ let scrollCheckInterval = null;
 function startScrollCheck() {
     scrollCheckInterval = setInterval(() => {
         const galleryVisible = document.getElementById('gallery-tab').style.display !== 'none';
-        if (!galleryVisible || galleryState.loading || galleryState.allLoaded) return;
+        if (!galleryVisible || galleryState.loading || galleryState.allLoaded ) return;
 
         const scrollTop = window.pageYOffset || document.documentElement.scrollTop || document.body.scrollTop || 0;
         const scrollHeight = Math.max(
@@ -843,7 +844,7 @@ function stopScrollCheck() {
 
 function handleGalleryScroll() {
     const galleryVisible = document.getElementById('gallery-tab').style.display !== 'none';
-        if (!galleryVisible || galleryState.loading || galleryState.allLoaded) return;
+        if (!galleryVisible || galleryState.loading || galleryState.allLoaded ) return;
 
     // Check if we're near the bottom of the page
     const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
@@ -900,7 +901,7 @@ function setupGalleryObserver() {
         entries.forEach(entry => {
             if (entry.isIntersecting) {
                 // console.log('[OBSERVER] Trigger visible - tab:', window.currentTab, 'loading:', galleryState.loading, 'allLoaded:', galleryState.allLoaded);
-                if (window.currentTab === 'gallery' && !galleryState.loading && !galleryState.allLoaded) {
+                if (window.currentTab === 'gallery' && !galleryState.loading && !galleryState.allLoaded ) {
                     // console.log('[OBSERVER] Loading more...');
                     loadGallery();
                 }

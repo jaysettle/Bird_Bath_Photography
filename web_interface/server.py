@@ -94,7 +94,7 @@ def get_images_dir():
 IMAGES_DIR = get_images_dir()
 UPLOAD_LOG = IMAGES_DIR / "drive_uploads.json"
 # Thumbnail settings - optimized for speed
-THUMBNAIL_SIZE = (300, 300)  # Smaller for faster loading
+THUMBNAIL_SIZE = (600, 600)  # Smaller for faster loading
 THUMBNAIL_DIR = IMAGES_DIR / ".thumbnails"
 
 def ensure_thumbnail_dir():
@@ -986,14 +986,18 @@ def serve_identified_species_thumbnail(species_folder, filename):
     """Serve thumbnail of photos from IdentifiedSpecies folder"""
     try:
         photo_path = IMAGES_DIR / "IdentifiedSpecies" / species_folder / filename
-        if photo_path.exists():
+        if not photo_path.exists():
+            return "Photo not found", 404
+        thumb_bytes = get_or_create_thumbnail(photo_path)
+        if thumb_bytes:
+            response = Response(thumb_bytes, mimetype="image/jpeg")
             response.headers["Cache-Control"] = "public, max-age=86400"
             return response
-        else:
-            return "Photo not found", 404
+        return "Error creating thumbnail", 500
     except Exception as e:
-        logger.error(f"Error serving identified species thumbnail: {e}")
-        return "Error serving thumbnail", 500
+        logger.error(f"Error serving species thumbnail: {e}")
+        return "Error", 500
+
 
 def find_available_port(start_port=8080, max_attempts=10):
     """Find an available port starting from start_port"""
