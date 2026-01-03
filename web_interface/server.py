@@ -569,10 +569,16 @@ def api_image(image_path):
     return jsonify({'error': 'Image not found'}), 404
 
 
-MODAL_IMAGE_SIZE = (1200, 1200)
+# Cascade sizes for progressive loading (smallest to largest)
+CASCADE_SIZES = [300, 600, 1200, 2400]  # Will stop at original size if smaller
 
 @app.route("/api/image-resized/<path:image_path>")
 def api_image_resized(image_path):
+    # Get requested size from query param, default to 600
+    requested_size = request.args.get('size', 600, type=int)
+    # Clamp to valid range
+    requested_size = max(100, min(requested_size, 4000))
+
     try:
         filepath = (IMAGES_DIR / image_path).resolve()
         if not filepath.is_relative_to(IMAGES_DIR.resolve()):
@@ -591,10 +597,17 @@ def api_image_resized(image_path):
             with Image.open(filepath) as img:
                 if img.mode in ("RGBA", "P"):
                     img = img.convert("RGB")
-                img.thumbnail(MODAL_IMAGE_SIZE, Image.Resampling.LANCZOS)
+                original_w, original_h = img.size
+                target_size = (requested_size, requested_size)
+                # Only resize if image is larger than target
+                if original_w > requested_size or original_h > requested_size:
+                    img.thumbnail(target_size, Image.Resampling.LANCZOS)
                 buffer = BytesIO()
-                img.save(buffer, format="JPEG", quality=85)
+                # Higher quality for larger sizes
+                quality = 70 if requested_size <= 300 else (80 if requested_size <= 600 else 90)
+                img.save(buffer, format="JPEG", quality=quality)
                 buffer.seek(0)
+                logger.info(f"[CASCADE] Served {filepath.name} at size={requested_size}, actual={img.size}, quality={quality}")
                 return Response(buffer.getvalue(), mimetype="image/jpeg")
         except Exception as e:
             logger.error(f"Error resizing image {filepath}: {e}")
@@ -640,6 +653,61 @@ def api_image_metadata(image_path):
             logger.error(f"Error getting metadata for {filepath}: {e}")
             return jsonify({"error": str(e)}), 500
     return jsonify({"error": "Image not found"}), 404
+
+
+# InstaPush directory for Instagram-ready images
+INSTAPUSH_DIR = Path("/home/jaysettle/BirdPhotos/InstaPush")
+
+@app.route('/api/instapush/<path:image_path>', methods=['POST'])
+@requires_auth
+def api_instapush(image_path):
+    """Copy full-resolution image to InstaPush folder for Instagram sharing"""
+    import shutil
+
+    try:
+        # Ensure InstaPush directory exists
+        INSTAPUSH_DIR.mkdir(parents=True, exist_ok=True)
+
+        # Clear existing files in InstaPush folder first
+        cleared_count = 0
+        for existing_file in INSTAPUSH_DIR.iterdir():
+            if existing_file.is_file():
+                existing_file.unlink()
+                cleared_count += 1
+        if cleared_count > 0:
+            logger.info(f"[INSTAPUSH] Cleared {cleared_count} existing file(s) from InstaPush folder")
+
+        # Resolve source path
+        filepath = (IMAGES_DIR / image_path).resolve()
+        if not filepath.is_relative_to(IMAGES_DIR.resolve()):
+            logger.warning(f"[INSTAPUSH] Invalid path attempted: {image_path}")
+            return jsonify({"error": "Invalid path"}), 403
+
+        # Try to find the file if not directly found
+        if not filepath.exists() and "/" not in image_path:
+            for date_folder in IMAGES_DIR.iterdir():
+                if date_folder.is_dir() and len(date_folder.name) == 10:
+                    date_filepath = date_folder / image_path
+                    if date_filepath.exists():
+                        filepath = date_filepath
+                        break
+
+        if not filepath.exists():
+            logger.warning(f"[INSTAPUSH] Image not found: {image_path}")
+            return jsonify({"error": "Image not found"}), 404
+
+        # Destination path (just the filename, no subfolders)
+        dest_path = INSTAPUSH_DIR / filepath.name
+
+        # Copy the file
+        shutil.copy2(filepath, dest_path)
+        logger.info(f"[INSTAPUSH] Copied: {filepath.name} -> {dest_path}")
+
+        return jsonify({"success": True, "message": "Copied to InstaPush", "path": str(dest_path), "cleared": cleared_count})
+
+    except Exception as e:
+        logger.error(f"[INSTAPUSH] Error copying {image_path}: {e}")
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route('/api/restart', methods=['POST'])

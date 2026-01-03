@@ -545,6 +545,95 @@ function openImage(imagePath, timestamp) {
     hideModalNav();
 }
 
+// Cascade loading state
+const cascadeState = {
+    sizes: [300, 600, 1200, 2400],
+    currentSizeIndex: 0,
+    currentImagePath: null,
+    isLoading: false,
+    aborted: false
+};
+
+// Progressive cascade loading for modal images
+function startCascadeLoad(imagePath) {
+    // Abort any previous cascade
+    cascadeState.aborted = true;
+
+    // Reset state for new image
+    cascadeState.currentImagePath = imagePath;
+    cascadeState.currentSizeIndex = 0;
+    cascadeState.isLoading = false;
+    cascadeState.aborted = false;
+
+    console.log(`[CASCADE] Starting progressive load for: ${imagePath}`);
+
+    // Load first (smallest) size immediately
+    loadCascadeSize();
+}
+
+function loadCascadeSize() {
+    if (cascadeState.aborted) {
+        console.log('[CASCADE] Aborted - modal closed or new image');
+        return;
+    }
+
+    const size = cascadeState.sizes[cascadeState.currentSizeIndex];
+    const imagePath = cascadeState.currentImagePath;
+
+    console.log(`[CASCADE] Loading size ${size}px (level ${cascadeState.currentSizeIndex + 1}/${cascadeState.sizes.length})`);
+
+    // Create a new image to load in background
+    const bgImg = new Image();
+
+    bgImg.onload = function() {
+        if (cascadeState.aborted || cascadeState.currentImagePath !== imagePath) {
+            console.log('[CASCADE] Aborted during load - discarding');
+            return;
+        }
+
+        // Swap in the higher quality image
+        elements.modalImg.src = bgImg.src;
+        console.log(`[CASCADE] Displayed size ${size}px`);
+
+        // Update the "Showing" display
+        updateCascadeMetadata(size);
+
+        // Hide loading indicator after first image
+        const loadingEl = document.getElementById('modal-loading');
+        if (loadingEl) loadingEl.classList.remove('visible');
+        elements.modalImg.style.opacity = '1';
+
+        // Load next size if available
+        cascadeState.currentSizeIndex++;
+        if (cascadeState.currentSizeIndex < cascadeState.sizes.length) {
+            // Small delay before loading next size
+            setTimeout(loadCascadeSize, 100);
+        } else {
+            console.log('[CASCADE] Reached maximum quality');
+        }
+    };
+
+    bgImg.onerror = function() {
+        console.log(`[CASCADE] Error loading size ${size}px`);
+    };
+
+    bgImg.src = `/api/image-resized/${imagePath}?size=${size}`;
+}
+
+function updateCascadeMetadata(currentSize) {
+    const metadataEl = document.querySelector('.metadata');
+    if (metadataEl) {
+        const maxSize = cascadeState.sizes[cascadeState.sizes.length - 1];
+        const quality = currentSize >= maxSize ? 'Full' : `${currentSize}px`;
+        metadataEl.textContent = `Showing: ${quality}`;
+    }
+}
+
+function stopCascadeLoad() {
+    console.log('[CASCADE] Stopping cascade load');
+    cascadeState.aborted = true;
+}
+
 // Open gallery image with navigation support
 function openGalleryImage(index) {
     if (index < 0 || index >= galleryState.allImages.length) return;
@@ -553,18 +642,15 @@ function openGalleryImage(index) {
     const img = galleryState.allImages[index];
 
     elements.modal.style.display = 'block';
-    
+
     // Show loading indicator
     const loadingEl = document.getElementById('modal-loading');
     if (loadingEl) loadingEl.classList.add('visible');
     elements.modalImg.style.opacity = '0.3';
-    
-    // Hide loading when image loads
-    elements.modalImg.onload = function() {
-        if (loadingEl) loadingEl.classList.remove('visible');
-        elements.modalImg.style.opacity = '1';
-    };
-    elements.modalImg.src = `/api/image-resized/${img.path}`;
+
+    // Start cascade loading
+    startCascadeLoad(img.path);
+
     updateModalCaption(img);
     showModalNav();
     updateNavButtons();
@@ -572,37 +658,122 @@ function openGalleryImage(index) {
 
 // Update modal caption with image info and email button
 
+// Track which images have been pushed to Instagram folder (per session)
+const instaPushedImages = new Set();
+
+// Handle InstaPush checkbox change
+async function handleInstaPushChange(checkbox, imagePath) {
+    console.log('[INSTAPUSH] Checkbox changed:', checkbox.checked, 'for image:', imagePath);
+
+    if (!checkbox.checked) {
+        console.log('[INSTAPUSH] Unchecked - no action needed');
+        return;
+    }
+
+    // Check if already pushed this session
+    if (instaPushedImages.has(imagePath)) {
+        console.log('[INSTAPUSH] Already pushed this session, skipping');
+        return;
+    }
+
+    // Mark as pushed to prevent duplicate copies
+    instaPushedImages.add(imagePath);
+
+    // Disable checkbox while copying
+    checkbox.disabled = true;
+    const label = checkbox.nextElementSibling;
+    if (label) label.textContent = ' Copying...';
+
+    try {
+        console.log('[INSTAPUSH] Sending copy request for:', imagePath);
+        const response = await fetch(`/api/instapush/${imagePath}`, {
+            method: 'POST'
+        });
+        const result = await response.json();
+        console.log('[INSTAPUSH] Response:', result);
+
+        if (result.success) {
+            const clearedMsg = result.cleared > 0 ? ` (cleared ${result.cleared} old)` : '';
+            console.log('[INSTAPUSH] Success:', result.message, clearedMsg);
+            if (label) label.textContent = ' Copied to InstaPush ✓';
+            checkbox.disabled = true;  // Keep disabled after success
+        } else {
+            console.log('[INSTAPUSH] Failed:', result.error);
+            if (label) label.textContent = ' Copy failed';
+            checkbox.checked = false;
+            checkbox.disabled = false;
+            instaPushedImages.delete(imagePath);  // Allow retry
+        }
+    } catch (e) {
+        console.log('[INSTAPUSH] Error:', e);
+        if (label) label.textContent = ' Copy error';
+        checkbox.checked = false;
+        checkbox.disabled = false;
+        instaPushedImages.delete(imagePath);  // Allow retry
+    }
+}
+
 // Update modal caption with image info, metadata, and email button
 async function updateModalCaption(img) {
     const emailBtn = `<button class="modal-email-btn" onclick="shareFullImage()">📧 Email Full Size</button>`;
-    
+    const alreadyPushed = instaPushedImages.has(img.path);
+    const instaPushCheckbox = `
+        <label class="instapush-label" style="margin-left: 10px; cursor: pointer;">
+            <input type="checkbox" id="instapush-cb" ${alreadyPushed ? 'checked disabled' : ''}
+                   onchange="handleInstaPushChange(this, '${img.path}')" style="cursor: pointer;">
+            <span>${alreadyPushed ? ' Copied to InstaPush ✓' : ' Push to Instagram'}</span>
+        </label>
+    `;
+
+    console.log('[METADATA] Fetching metadata for:', img.path);
+
     // Show loading state first
     elements.modalCaption.innerHTML = `
         <div class="modal-info">
             <span>Captured: ${formatTime(img.timestamp)}</span>
             <span class="metadata-loading">Loading metadata...</span>
             ${emailBtn}
+            ${instaPushCheckbox}
         </div>
     `;
-    
+
     // Fetch metadata
     try {
-        const response = await fetch(`/api/image-metadata/${img.path}`, {
-            headers: { "Authorization": "Basic " + btoa("birds:birdwatcher") }
-        });
+        const response = await fetch(`/api/image-metadata/${img.path}`);
+        console.log('[METADATA] Response status:', response.status);
         if (response.ok) {
             const meta = await response.json();
+            console.log('[METADATA] Received:', meta);
             elements.modalCaption.innerHTML = `
                 <div class="modal-info">
                     <span>Captured: ${formatTime(img.timestamp)}</span>
                     <span class="metadata">Original: ${meta.original_width}x${meta.original_height} (${meta.file_size_mb}MB)</span>
                     <span class="metadata">Showing: ${meta.display_width}x${meta.display_height}</span>
                     ${emailBtn}
+                    ${instaPushCheckbox}
+                </div>
+            `;
+        } else {
+            console.log('[METADATA] Error response:', response.status, response.statusText);
+            elements.modalCaption.innerHTML = `
+                <div class="modal-info">
+                    <span>Captured: ${formatTime(img.timestamp)}</span>
+                    <span class="metadata">Metadata unavailable</span>
+                    ${emailBtn}
+                    ${instaPushCheckbox}
                 </div>
             `;
         }
     } catch (e) {
-        // console.log("Could not fetch metadata:", e);
+        console.log('[METADATA] Fetch error:', e);
+        elements.modalCaption.innerHTML = `
+            <div class="modal-info">
+                <span>Captured: ${formatTime(img.timestamp)}</span>
+                <span class="metadata">Metadata error</span>
+                ${emailBtn}
+                ${instaPushCheckbox}
+            </div>
+        `;
     }
 }
 
@@ -685,18 +856,34 @@ async function emailCurrentImage() {
     }
 }
 async function shareFullImage() {
+    console.log('[EMAIL] Share button clicked');
     const img = galleryState.allImages[galleryState.currentIndex];
-    if (!img) return;
+    if (!img) {
+        console.log('[EMAIL] No image found at current index');
+        return;
+    }
+    console.log('[EMAIL] Sharing image:', img.path);
     const btn = document.querySelector('.modal-email-btn');
     if (btn) { btn.disabled = true; btn.textContent = 'Loading...'; }
     try {
+        console.log('[EMAIL] Fetching full image from /api/image/' + img.path);
+        const startTime = Date.now();
         const response = await fetch('/api/image/' + img.path);
+        console.log('[EMAIL] Fetch response status:', response.status, 'time:', (Date.now() - startTime) + 'ms');
+        if (!response.ok) {
+            console.log('[EMAIL] Fetch failed:', response.status, response.statusText);
+            alert('Failed to load image: ' + response.status);
+            return;
+        }
         const blob = await response.blob();
+        console.log('[EMAIL] Blob received, size:', (blob.size / 1024 / 1024).toFixed(2) + 'MB');
         const filename = img.path.split('/').pop() || 'bird_photo.jpg';
         const file = new File([blob], filename, { type: blob.type });
         if (navigator.canShare && navigator.canShare({ files: [file] })) {
+            console.log('[EMAIL] Using native share');
             await navigator.share({ files: [file], title: 'Bird Photo', text: 'Check out this bird photo!' });
         } else {
+            console.log('[EMAIL] Native share not available, downloading');
             const a = document.createElement('a');
             a.href = URL.createObjectURL(blob);
             a.download = filename;
@@ -704,12 +891,19 @@ async function shareFullImage() {
             URL.revokeObjectURL(a.href);
             alert('Image downloaded. Please attach it to your email manually.');
         }
-    } catch (err) { /* ignore AbortError */ }
+        console.log('[EMAIL] Share complete');
+    } catch (err) {
+        console.log('[EMAIL] Error:', err.name, err.message);
+        if (err.name !== 'AbortError') {
+            alert('Error sharing image: ' + err.message);
+        }
+    }
     if (btn) { btn.disabled = false; btn.textContent = '📧 Email Full Size'; }
 }
 
 // Close modal
 function closeModal() {
+    stopCascadeLoad();  // Stop any ongoing cascade loading
     elements.modal.style.display = 'none';
     hideModalNav();
 }
